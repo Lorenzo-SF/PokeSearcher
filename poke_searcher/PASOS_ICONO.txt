@@ -1,0 +1,74 @@
+═══════════════════════════════════════════════════════════════
+  CONFIGURAR ICONO DE LA APP - PASOS RÁPIDOS
+═══════════════════════════════════════════════════════════════
+
+PROBLEMA: flutter_launcher_icons NO soporta SVG directamente.
+SOLUCIÓN: Convertir pokeball.svg a PNG primero.
+
+═══════════════════════════════════════════════════════════════
+PASO 1: CONVERTIR SVG A PNG
+═══════════════════════════════════════════════════════════════
+
+OPCIÓN A - Conversor Online (MÁS FÁCIL):
+  1. Abre: https://convertio.co/svg-png/
+  2. Sube: assets/pokeball.svg
+  3. Configura tamaño: 1024x1024 píxeles
+  4. Descarga el PNG
+  5. Guárdalo como: assets/pokeball_icon.png
+
+OPCIÓN B - Si tienes Inkscape instalado:
+  inkscape assets/pokeball.svg --export-filename=assets/pokeball_icon.png --export-width=1024 --export-height=1024
+
+OPCIÓN C - Si tienes ImageMagick instalado:
+  magick assets/pokeball.svg -resize 1024x1024 assets/pokeball_icon.png
+
+═══════════════════════════════════════════════════════════════
+PASO 2: VERIFICAR QUE EL PNG EXISTE
+═══════════════════════════════════════════════════════════════
+
+Asegúrate de que existe el archivo:
+  assets/pokeball_icon.png (debe ser 1024x1024 píxeles)
+
+═══════════════════════════════════════════════════════════════
+PASO 3: ACTUALIZAR pubspec.yaml
+═══════════════════════════════════════════════════════════════
+
+En pubspec.yaml, las líneas ya están descomentadas:
+  image_path: "assets/pokeball_icon.png"
+  adaptive_icon_foreground: "assets/pokeball_icon.png"
+
+Si están comentadas (#), descoméntalas.
+
+═══════════════════════════════════════════════════════════════
+PASO 4: GENERAR LOS ICONOS
+═══════════════════════════════════════════════════════════════
+
+Ejecuta estos comandos en PowerShell:
+
+  cd C:\Users\loren\Desktop\proyectos\pokesearch\poke_searcher
+  flutter pub get
+  flutter pub run flutter_launcher_icons
+
+═══════════════════════════════════════════════════════════════
+PASO 5: RECONSTRUIR LA APP
+═══════════════════════════════════════════════════════════════
+
+  flutter clean
+  flutter run
+
+═══════════════════════════════════════════════════════════════
+VERIFICAR QUE FUNCIONÓ
+═══════════════════════════════════════════════════════════════
+
+- Android: El icono debería aparecer en el launcher
+- iOS: El icono debería aparecer en el home screen  
+- Web: El favicon debería cambiar
+- Windows: El icono del ejecutable debería cambiar
+
+Si no funciona:
+  1. Asegúrate de hacer flutter clean antes de flutter run
+  2. En Android, desinstala la app completamente y vuelve a instalar
+  3. Verifica que assets/pokeball_icon.png existe y tiene 1024x1024 px
+
+═══════════════════════════════════════════════════════════════
+

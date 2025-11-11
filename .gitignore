@@ -1,0 +1,86 @@
+# Flutter/Dart
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/.pub-cache/
+**/.pub/
+**/pubspec.lock
+
+# Drift generated files (se regeneran con build_runner)
+**/*.g.dart
+**/*.freezed.dart
+
+# IDE
+**/.idea/
+**/*.iml
+**/.vscode/
+**/.settings/
+**/.classpath
+**/.project
+
+# OS
+**/.DS_Store
+**/Thumbs.db
+**/.fuse_hidden*
+**/.directory
+**/.Trash-*
+
+# Logs
+**/*.log
+**/logs/
+
+# Temporary files
+**/*.tmp
+**/*.temp
+**/*.swp
+**/*.swo
+**/*~
+
+# Coverage
+**/coverage/
+**/.coverage
+
+# Android
+**/android/.gradle/
+**/android/app/build/
+**/android/.idea/
+**/android/local.properties
+**/android/.cxx/
+**/android/.externalNativeBuild/
+
+# iOS
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/.last_build_id
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+
+# Web
+**/web/.dart_tool/
+
+# Windows
+**/windows/flutter/generated_plugin_registrant.cc
+**/windows/flutter/generated_plugin_registrant.h
+**/windows/flutter/generated_plugins.cmake
+
+# macOS
+**/macos/Flutter/GeneratedPluginRegistrant.swift
+**/macos/Flutter/ephemeral/
+
+# Linux
+**/linux/flutter/generated_plugin_registrant.cc
+**/linux/flutter/generated_plugin_registrant.h
+**/linux/flutter/generated_plugins.cmake
+
+# Archivos de datos grandes (si los hay)
+# **/pokemon_data/
+# **/assets/downloads/
+
+# Archivos de configuración local
+**/.env
+**/.env.local
+
