@@ -46,7 +46,11 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
       
       for (final entry in uniquePokemon.values) {
         final species = entry['species'] as PokemonSpecy;
-        final pokedexNumbers = entry['pokedexNumbers'] as List<Map<String, dynamic>>;
+        // Convertir List<dynamic> a List<Map<String, dynamic>>
+        final pokedexNumbersRaw = entry['pokedexNumbers'] as List;
+        final pokedexNumbers = pokedexNumbersRaw
+            .map((item) => item as Map<String, dynamic>)
+            .toList();
         
         // Obtener el pokemon principal de esta especie (el primero)
         final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
@@ -89,116 +93,71 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
     }
   }
 
-  /// Obtener la mejor imagen disponible (SVG preferido, luego PNG de mayor resolución)
+  /// Obtener la mejor imagen disponible (SVG preferido, igual que en regiones)
   String? _getBestImageUrl(PokemonData? pokemon) {
     if (pokemon == null) return null;
     
-    // Recopilar todas las URLs disponibles
-    final List<Map<String, String?>> imageUrls = [
-      {'url': pokemon.artworkOfficialUrl, 'type': 'artwork'},
-      {'url': pokemon.artworkOfficialShinyUrl, 'type': 'artwork_shiny'},
-      {'url': pokemon.spriteFrontDefaultUrl, 'type': 'sprite_front'},
-      {'url': pokemon.spriteFrontShinyUrl, 'type': 'sprite_front_shiny'},
-      {'url': pokemon.spriteBackDefaultUrl, 'type': 'sprite_back'},
-      {'url': pokemon.spriteBackShinyUrl, 'type': 'sprite_back_shiny'},
-    ];
-    
-    // Filtrar URLs válidas
-    final validUrls = imageUrls
-        .where((item) => item['url'] != null && item['url']!.isNotEmpty)
-        .map((item) => item['url']!)
-        .toList();
-    
-    if (validUrls.isEmpty) return null;
-    
-    // Prioridad 1: Buscar SVG
-    final svgUrls = validUrls.where((url) => url.toLowerCase().endsWith('.svg')).toList();
-    if (svgUrls.isNotEmpty) {
-      // Si hay múltiples SVG, preferir artwork oficial
-      final artworkSvg = svgUrls.firstWhere(
-        (url) => url.contains('artwork') || url.contains('official'),
-        orElse: () => svgUrls.first,
-      );
-      return artworkSvg;
+    // Prioridad: SVG primero (igual que en regiones)
+    if (pokemon.artworkOfficialUrl != null && 
+        pokemon.artworkOfficialUrl!.isNotEmpty &&
+        pokemon.artworkOfficialUrl!.toLowerCase().endsWith('.svg')) {
+      return pokemon.artworkOfficialUrl;
+    }
+    if (pokemon.artworkOfficialShinyUrl != null && 
+        pokemon.artworkOfficialShinyUrl!.isNotEmpty &&
+        pokemon.artworkOfficialShinyUrl!.toLowerCase().endsWith('.svg')) {
+      return pokemon.artworkOfficialShinyUrl;
+    }
+    if (pokemon.spriteFrontDefaultUrl != null && 
+        pokemon.spriteFrontDefaultUrl!.isNotEmpty &&
+        pokemon.spriteFrontDefaultUrl!.toLowerCase().endsWith('.svg')) {
+      return pokemon.spriteFrontDefaultUrl;
+    }
+    if (pokemon.spriteFrontShinyUrl != null && 
+        pokemon.spriteFrontShinyUrl!.isNotEmpty &&
+        pokemon.spriteFrontShinyUrl!.toLowerCase().endsWith('.svg')) {
+      return pokemon.spriteFrontShinyUrl;
     }
     
-    // Prioridad 2: PNG ordenados por resolución (mayor primero)
-    final pngUrls = validUrls.where((url) => url.toLowerCase().endsWith('.png')).toList();
-    if (pngUrls.isNotEmpty) {
-      // Ordenar por resolución estimada (buscar números en la URL que indiquen resolución)
-      pngUrls.sort((a, b) {
-        final aRes = _extractResolution(a);
-        final bRes = _extractResolution(b);
-        return bRes.compareTo(aRes); // Mayor primero
-      });
-      
-      // Preferir artwork oficial si está disponible
-      final artworkPng = pngUrls.firstWhere(
-        (url) => url.contains('artwork') || url.contains('official'),
-        orElse: () => pngUrls.first,
-      );
-      return artworkPng;
+    // Si no hay SVG, usar artwork oficial (PNG)
+    if (pokemon.artworkOfficialUrl != null && pokemon.artworkOfficialUrl!.isNotEmpty) {
+      return pokemon.artworkOfficialUrl;
+    }
+    if (pokemon.artworkOfficialShinyUrl != null && pokemon.artworkOfficialShinyUrl!.isNotEmpty) {
+      return pokemon.artworkOfficialShinyUrl;
+    }
+    if (pokemon.spriteFrontDefaultUrl != null && pokemon.spriteFrontDefaultUrl!.isNotEmpty) {
+      return pokemon.spriteFrontDefaultUrl;
+    }
+    if (pokemon.spriteFrontShinyUrl != null && pokemon.spriteFrontShinyUrl!.isNotEmpty) {
+      return pokemon.spriteFrontShinyUrl;
     }
     
-    // Si no hay SVG ni PNG, devolver la primera URL disponible
-    return validUrls.first;
-  }
-  
-  /// Extraer resolución estimada de una URL
-  /// Busca patrones como "192x192", "512", "hd", "high" etc.
-  int _extractResolution(String url) {
-    // Buscar patrones de resolución en la URL
-    final resolutionPattern = RegExp(r'(\d{2,4})x(\d{2,4})|(\d{3,4})(?:px|p)?');
-    final match = resolutionPattern.firstMatch(url.toLowerCase());
-    
-    if (match != null) {
-      // Si hay formato "WxH", usar el mayor
-      if (match.group(1) != null && match.group(2) != null) {
-        final w = int.tryParse(match.group(1)!) ?? 0;
-        final h = int.tryParse(match.group(2)!) ?? 0;
-        return w > h ? w : h;
-      }
-      // Si hay un solo número, usarlo
-      if (match.group(3) != null) {
-        return int.tryParse(match.group(3)!) ?? 0;
-      }
-    }
-    
-    // Buscar palabras clave que indiquen resolución
-    if (url.toLowerCase().contains('hd') || url.toLowerCase().contains('high')) {
-      return 512;
-    }
-    if (url.toLowerCase().contains('md') || url.toLowerCase().contains('medium')) {
-      return 256;
-    }
-    if (url.toLowerCase().contains('sm') || url.toLowerCase().contains('small')) {
-      return 128;
-    }
-    
-    // Por defecto, artwork oficial suele ser de mayor resolución
-    if (url.contains('artwork') || url.contains('official')) {
-      return 512;
-    }
-    
-    // Sprites suelen ser más pequeños
-    if (url.contains('sprite')) {
-      return 96;
-    }
-    
-    return 0; // Resolución desconocida
+    return null;
   }
 
-  /// Formatear números de pokedex
+  /// Formatear números de pokedex (separados por "/")
+  /// Aplica distinct para evitar mostrar números duplicados
   String _formatPokedexNumbers(List<Map<String, dynamic>> pokedexNumbers) {
     if (pokedexNumbers.isEmpty) return '';
-    if (pokedexNumbers.length == 1) {
-      return '#${pokedexNumbers.first['entryNumber']}';
+    
+    // Obtener números únicos (distinct)
+    final uniqueNumbers = <int>{};
+    for (final n in pokedexNumbers) {
+      final entryNumber = n['entryNumber'] as int?;
+      if (entryNumber != null) {
+        uniqueNumbers.add(entryNumber);
+      }
     }
     
-    // Múltiples números: "nº1 / nº2 / ..."
-    return pokedexNumbers
-        .map((n) => '#${n['entryNumber']}')
-        .join(' / ');
+    if (uniqueNumbers.isEmpty) return '';
+    if (uniqueNumbers.length == 1) {
+      return '${uniqueNumbers.first}';
+    }
+    
+    // Múltiples números únicos: "nº1 / nº2 / ..." (ordenados)
+    final sortedNumbers = uniqueNumbers.toList()..sort();
+    return sortedNumbers.join(' / ');
   }
 
   /// Obtener colores de las pokedexes
@@ -242,8 +201,14 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                     ],
                   ),
                 )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
+              : GridView.builder(
+                  padding: const EdgeInsets.all(8),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    crossAxisSpacing: 8,
+                    mainAxisSpacing: 8,
+                    childAspectRatio: 0.75, // Ancho/Altura
+                  ),
                   itemCount: _pokemonList.length,
                   itemBuilder: (context, index) {
                     final item = _pokemonList[index];
@@ -274,112 +239,118 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
     final hasMultiplePokedexes = colors.length > 1;
     
     return Container(
-      margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 8,
-            spreadRadius: 2,
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 4,
+            spreadRadius: 1,
           ),
         ],
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         child: Stack(
           children: [
-            // Fondo con color(es) de pokedex
+            // Fondo con color(es) de pokedex (translúcido)
             if (hasMultiplePokedexes)
-              // Múltiples pokedexes: líneas diagonales
+              // Múltiples pokedexes: franjas diagonales (45 grados)
               _buildDiagonalLinesBackground(colors)
             else
-              // Una sola pokedex: color sólido
+              // Una sola pokedex: color sólido translúcido
               Container(
                 color: colors.first.withOpacity(0.8),
                 width: double.infinity,
-                height: 120,
+                height: double.infinity,
               ),
             // Contenido
             Container(
-              padding: const EdgeInsets.all(16),
-              child: Row(
+              padding: const EdgeInsets.all(8),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  // Imagen del pokemon
-                  Container(
-                    width: 88,
-                    height: 88,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.3),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: Colors.white.withOpacity(0.5),
-                        width: 2,
-                      ),
-                    ),
-                    child: imageUrl != null
-                        ? ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: Image.network(
-                              imageUrl,
-                              width: 88,
-                              height: 88,
-                              fit: BoxFit.contain,
-                              errorBuilder: (context, error, stackTrace) {
-                                return const Icon(
-                                  Icons.catching_pokemon,
-                                  size: 48,
-                                  color: Colors.white,
-                                );
-                              },
-                            ),
-                          )
-                        : const Icon(
-                            Icons.catching_pokemon,
-                            size: 48,
-                            color: Colors.white,
-                          ),
-                  ),
-                  const SizedBox(width: 16),
-                  // Información
+                  // Imagen del pokemon (SVG preferido)
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        // Números de pokedex
-                        Text(
-                          numbersText,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white,
-                            shadows: [
-                              Shadow(
-                                color: Colors.black,
-                                blurRadius: 2,
-                              ),
-                            ],
-                          ),
+                    child: Container(
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.3),
+                          width: 1,
                         ),
-                        const SizedBox(height: 8),
-                        // Nombre del pokemon
-                        Text(
-                          species.name,
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                            shadows: [
-                              Shadow(
-                                color: Colors.black,
-                                blurRadius: 4,
+                      ),
+                      child: imageUrl != null
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(7),
+                              child: Image.network(
+                                imageUrl,
+                                fit: BoxFit.contain,
+                                errorBuilder: (context, error, stackTrace) {
+                                  return const Icon(
+                                    Icons.catching_pokemon,
+                                    size: 32,
+                                    color: Colors.white,
+                                  );
+                                },
+                                loadingBuilder: (context, child, loadingProgress) {
+                                  if (loadingProgress == null) return child;
+                                  return const Center(
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                    ),
+                                  );
+                                },
                               ),
-                            ],
-                          ),
+                            )
+                          : const Icon(
+                              Icons.catching_pokemon,
+                              size: 32,
+                              color: Colors.white,
+                            ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  // Números de pokedex (separados por "/")
+                  Text(
+                    numbersText,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black,
+                          blurRadius: 2,
                         ),
                       ],
                     ),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  // Nombre del pokemon
+                  Text(
+                    species.name,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black,
+                          blurRadius: 3,
+                        ),
+                      ],
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
@@ -390,16 +361,20 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
     );
   }
 
-  /// Construir fondo con líneas diagonales para múltiples pokedexes
+  /// Construir fondo con franjas diagonales para múltiples pokedexes
   Widget _buildDiagonalLinesBackground(List<Color> colors) {
-    return CustomPaint(
-      size: const Size(double.infinity, 120),
-      painter: _DiagonalLinesPainter(colors),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return CustomPaint(
+          size: Size(constraints.maxWidth, constraints.maxHeight),
+          painter: _DiagonalLinesPainter(colors),
+        );
+      },
     );
   }
 }
 
-/// Painter para dibujar líneas diagonales con diferentes colores
+/// Painter para dibujar franjas diagonales (45 grados) con diferentes colores
 class _DiagonalLinesPainter extends CustomPainter {
   final List<Color> colors;
   final double angle = 45 * math.pi / 180; // 45 grados en radianes
@@ -408,44 +383,63 @@ class _DiagonalLinesPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..style = PaintingStyle.fill
-      ..strokeWidth = size.width / colors.length;
-
-    // Calcular el espaciado entre líneas
-    final spacing = size.width / colors.length;
+    if (colors.isEmpty) return;
     
-    // Dibujar cada línea diagonal
+    // Calcular el ancho de cada franja
+    final stripeWidth = size.width / colors.length;
+    
+    // Calcular la distancia diagonal necesaria para cubrir toda la altura
+    final diagonalDistance = size.height / math.cos(angle);
+    
+    // Dibujar cada franja diagonal
     for (int i = 0; i < colors.length; i++) {
-      paint.color = colors[i].withOpacity(0.8);
+      final paint = Paint()
+        ..color = colors[i].withOpacity(0.8)
+        ..style = PaintingStyle.fill;
       
-      // Calcular punto inicial y final de la línea
-      // La línea debe cruzar todo el canvas en diagonal
-      final startX = i * spacing - size.height * math.tan(angle);
-      final startY = 0.0;
-      final endX = (i + 1) * spacing + size.height * math.tan(angle);
-      final endY = size.height;
+      // Calcular los puntos de la franja diagonal
+      // La franja va de esquina superior izquierda a inferior derecha
+      final startX = i * stripeWidth;
+      final endX = (i + 1) * stripeWidth;
       
-      // Dibujar línea diagonal
-      canvas.drawLine(
-        Offset(startX, startY),
-        Offset(endX, endY),
-        paint,
-      );
+      // Crear path para la franja diagonal
+      final path = Path();
       
-      // Rellenar el área entre líneas para crear bandas
-      final path = Path()
-        ..moveTo(startX, startY)
-        ..lineTo(endX, endY)
-        ..lineTo(endX + spacing, endY)
-        ..lineTo(startX + spacing, startY)
-        ..close();
+      // Punto superior izquierdo de la franja
+      path.moveTo(startX, 0);
       
+      // Punto superior derecho de la franja
+      path.lineTo(endX, 0);
+      
+      // Punto inferior derecho de la franja (desplazado por el ángulo)
+      path.lineTo(endX + diagonalDistance * math.sin(angle), size.height);
+      
+      // Punto inferior izquierdo de la franja (desplazado por el ángulo)
+      path.lineTo(startX + diagonalDistance * math.sin(angle), size.height);
+      
+      // Cerrar el path
+      path.close();
+      
+      // Dibujar la franja
       canvas.drawPath(path, paint);
     }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant CustomPainter oldDelegate) {
+    if (oldDelegate is _DiagonalLinesPainter) {
+      return oldDelegate.colors.length != colors.length ||
+          !_colorsEqual(oldDelegate.colors, colors);
+    }
+    return true;
+  }
+  
+  bool _colorsEqual(List<Color> a, List<Color> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i].value != b[i].value) return false;
+    }
+    return true;
+  }
 }
 

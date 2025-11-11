@@ -7,8 +7,8 @@ import '../database/daos/pokedex_dao.dart';
 import '../database/daos/pokemon_dao.dart';
 import '../services/download/download_service.dart';
 import '../services/download/download_manager.dart';
-import '../services/download/download_phases.dart';
 import 'pokemon_list_screen.dart';
+import '../utils/logger.dart';
 
 class RegionsScreen extends StatefulWidget {
   final AppDatabase database;
@@ -49,10 +49,10 @@ class _RegionsScreenState extends State<RegionsScreen> {
       final downloadService = DownloadService(database: widget.database);
       final regions = await regionDao.getAllRegions();
       
-      // Obtener contador de pokedex, estado de descarga y pokemons iniciales para cada región
+      // Obtener contador de pokemons únicos, estado de descarga y pokemons iniciales para cada región
       final regionsWithData = await Future.wait(
         regions.map((region) async {
-          final count = await regionDao.getPokedexCount(region.id);
+          final pokemonCount = await pokedexDao.getUniquePokemonCountByRegion(region.id);
           final isComplete = await downloadService.isRegionFullyDownloaded(region.id);
           
           // Cargar los 3 pokemons iniciales
@@ -66,14 +66,14 @@ class _RegionsScreenState extends State<RegionsScreen> {
               }
             }
           } catch (e) {
-            print('Error al cargar pokemons iniciales para ${region.name}: $e');
+            Logger.error('Error al cargar pokemons iniciales', context: LogContext.region, error: e);
           }
           
           return {
             'region': RegionData(
               id: region.id,
               name: region.name,
-              pokedexCount: count,
+              pokedexCount: pokemonCount, // Ahora es el conteo de pokemons únicos
             ),
             'isComplete': isComplete,
             'starters': starters,
@@ -116,6 +116,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
       final pokemonDao = PokemonDao(widget.database);
       
       final isComplete = await downloadService.isRegionFullyDownloaded(regionId);
+      final pokemonCount = await pokedexDao.getUniquePokemonCountByRegion(regionId);
       
       // Recargar los 3 pokemons iniciales
       List<PokemonData> starters = [];
@@ -128,17 +129,26 @@ class _RegionsScreenState extends State<RegionsScreen> {
           }
         }
       } catch (e) {
-        print('Error al recargar pokemons iniciales: $e');
+        Logger.error('Error al recargar pokemons iniciales', context: LogContext.region, error: e);
       }
       
       if (mounted) {
         setState(() {
           _regionCompleteStatus[regionId] = isComplete;
           _starterPokemons[regionId] = starters;
+          // Actualizar también el contador de pokemons en la lista de regiones
+          final regionIndex = _regions.indexWhere((r) => r.id == regionId);
+          if (regionIndex != -1) {
+            _regions[regionIndex] = RegionData(
+              id: _regions[regionIndex].id,
+              name: _regions[regionIndex].name,
+              pokedexCount: pokemonCount,
+            );
+          }
         });
       }
     } catch (e) {
-      print('Error al actualizar estado de región: $e');
+      Logger.error('Error al actualizar estado de región', context: LogContext.region, error: e);
     }
   }
   
@@ -190,12 +200,11 @@ class _RegionsScreenState extends State<RegionsScreen> {
     // Verificar si la región está completamente descargada
     // IMPORTANTE: Verificar siempre antes de decidir qué hacer
     final isComplete = await downloadService.isRegionFullyDownloaded(region.id);
-    print('Región ${region.name} (ID: ${region.id}): ${isComplete ? "COMPLETA" : "INCOMPLETA"}');
     
     if (isComplete) {
       // Navegar a la lista de pokemons
       if (mounted) {
-        Navigator.of(context).push(
+        await Navigator.of(context).push(
           MaterialPageRoute(
             builder: (context) => PokemonListScreen(
               database: widget.database,
@@ -205,6 +214,8 @@ class _RegionsScreenState extends State<RegionsScreen> {
             ),
           ),
         );
+        // Refrescar el estado de la región cuando se vuelve de la navegación
+        await _refreshRegionStatus(region.id);
       }
     } else {
       // Descargar solo las pokedexes incompletas
@@ -246,7 +257,6 @@ class _RegionsScreenState extends State<RegionsScreen> {
         
         // Verificar nuevamente desde el servicio para asegurar que está actualizado
         final isNowComplete = await downloadService.isRegionFullyDownloaded(region.id);
-        print('Después de descargar, región ${region.name}: ${isNowComplete ? "COMPLETA" : "INCOMPLETA"}');
         
         // Actualizar el estado en memoria
         if (mounted) {
@@ -258,7 +268,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
         if (mounted) {
           if (isNowComplete) {
             // Si ahora está completa, navegar a la lista de pokemons
-            Navigator.of(context).push(
+            await Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (context) => PokemonListScreen(
                   database: widget.database,
@@ -268,6 +278,8 @@ class _RegionsScreenState extends State<RegionsScreen> {
                 ),
               ),
             );
+            // Refrescar el estado de la región cuando se vuelve de la navegación
+            await _refreshRegionStatus(region.id);
           } else {
             // Mostrar mensaje de éxito
             ScaffoldMessenger.of(context).showSnackBar(
@@ -499,7 +511,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
-                    '${region.pokedexCount ?? 0} Pokédex',
+                    '${region.pokedexCount ?? 0} Pokémon',
                     style: const TextStyle(
                       color: Colors.white,
                       fontSize: 16,

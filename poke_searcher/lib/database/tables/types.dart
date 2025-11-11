@@ -8,6 +8,9 @@ class Types extends Table {
   IntColumn get generationId => integer().nullable()();
   IntColumn get moveDamageClassId => integer().nullable()();
   
+  // Color hexadecimal del tipo
+  TextColumn get color => text().nullable()();
+  
   // JSON para relaciones de daño (evita múltiples joins en inserts)
   TextColumn get damageRelationsJson => text().nullable()();
   

@@ -12,6 +12,7 @@ import '../../models/mappers/language_mapper.dart';
 import '../../models/mappers/region_mapper.dart';
 import '../../models/mappers/type_mapper.dart';
 import '../../utils/color_generator.dart';
+import '../../utils/logger.dart';
 
 /// Servicio principal de descarga de datos
 class DownloadService {
@@ -38,7 +39,6 @@ class DownloadService {
     final phaseInfo = PhaseInfo.getInfo(phase);
     
     int totalItems = 0;
-    int totalSizeBytes = 0;
     
     // FASE 1: Calcular total y descargar todos los JSON en memoria
     onProgress?.call(DownloadProgress(
@@ -46,29 +46,38 @@ class DownloadService {
       currentEntity: 'Preparando descarga...',
       completed: 0,
       total: 0,
-      totalSizeBytes: 0,
     ));
     
     // Estructura para almacenar todos los datos descargados
     final Map<String, List<Map<String, dynamic>>> downloadedData = {};
     
-    // FASE 1.1: Calcular total de items primero
+    // FASE 1.1: Calcular total de items
     final Map<String, int> entityTypeCounts = {};
+    
+    // Obtener el conteo de cada tipo
     for (final entityType in phaseInfo.entityTypes) {
       try {
         final list = await apiClient.getResourceList(endpoint: entityType);
         final count = list['count'] as int;
         entityTypeCounts[entityType] = count;
         totalItems += count;
-        totalSizeBytes += count * 2048;
       } catch (e) {
-        print('Error al calcular total para $entityType: $e');
+        Logger.error('Error al calcular total para $entityType', error: e);
         entityTypeCounts[entityType] = 0;
       }
     }
     
-    // FASE 1.2: Descargar todos los JSON en memoria
+    // Notificar inicio de descarga
+    onProgress?.call(DownloadProgress(
+      phase: phase,
+      currentEntity: 'Iniciando descarga...',
+      completed: 0,
+      total: totalItems,
+    ));
+    
+    // FASE 1.2: Descargar todos los JSON en memoria (sin delays adicionales, el api_client ya maneja rate limiting)
     int downloadedCount = 0;
+    
     for (final entityType in phaseInfo.entityTypes) {
       try {
         final list = await apiClient.getResourceList(endpoint: entityType);
@@ -86,34 +95,30 @@ class DownloadService {
             entityData.add(data);
             downloadedCount++;
             
-            // Actualizar progreso de descarga
-            onProgress?.call(DownloadProgress(
-              phase: phase,
-              currentEntity: 'Descargando $entityType... (${entityData.length}/$count)',
-              completed: downloadedCount,
-              total: totalItems,
-              totalSizeBytes: totalSizeBytes,
-            ));
+            // Actualizar progreso de descarga (cada 10 items para no saturar)
+            if (downloadedCount % 10 == 0 || entityData.length == count) {
+              onProgress?.call(DownloadProgress(
+                phase: phase,
+                currentEntity: 'Descargando $entityType... (${entityData.length}/$count)',
+                completed: downloadedCount,
+                total: totalItems,
+              ));
+            }
             
-            // Delay para evitar rate limiting
-            await Future.delayed(const Duration(milliseconds: 300));
+            // NO añadir delay adicional - el api_client ya maneja rate limiting (300ms)
           } catch (e) {
-            print('Error al descargar $url: $e');
-            // Continuar con el siguiente
+            // Error silencioso para no saturar logs - solo errores críticos
           }
         }
         
         downloadedData[entityType] = entityData;
-        
-        // Delay entre tipos
-        await Future.delayed(const Duration(milliseconds: 500));
       } catch (e) {
-        print('Error al descargar tipo $entityType: $e');
+        Logger.error('Error al descargar tipo $entityType', context: LogContext.essential, error: e);
         downloadedData[entityType] = []; // Lista vacía si falla
       }
     }
     
-    // FASE 2: Insertar todos los datos descargados en batch
+    // FASE 2: Insertar todos los datos descargados en batch (usando transacciones por tipo)
     int insertedCount = 0;
     for (final entityType in phaseInfo.entityTypes) {
       final entityDataList = downloadedData[entityType] ?? [];
@@ -127,22 +132,36 @@ class DownloadService {
         continue;
       }
       
-      // Insertar todos los datos de este tipo
-      for (final data in entityDataList) {
-        try {
-          await _saveEntityData(entityType, data);
-          insertedCount++;
-          
-          // Actualizar progreso de inserción (mostrar como parte del total)
-          onProgress?.call(DownloadProgress(
-            phase: phase,
-            currentEntity: 'Guardando $entityType... ($insertedCount/$downloadedCount)',
-            completed: downloadedCount + insertedCount,
-            total: totalItems * 2, // Descarga (totalItems) + Inserción (totalItems)
-            totalSizeBytes: totalSizeBytes,
-          ));
-        } catch (e) {
-          print('Error al guardar datos de $entityType: $e');
+      // Insertar todos los datos de este tipo en una sola transacción
+      try {
+        await database.transaction(() async {
+          for (final data in entityDataList) {
+            try {
+              await _saveEntityData(entityType, data);
+              insertedCount++;
+            } catch (e) {
+              Logger.error('Error al guardar datos de $entityType', context: LogContext.essential, error: e);
+            }
+          }
+        });
+        
+        // Actualizar progreso después de insertar todo el tipo
+        onProgress?.call(DownloadProgress(
+          phase: phase,
+          currentEntity: 'Guardando $entityType... ($insertedCount/$downloadedCount)',
+          completed: downloadedCount + insertedCount,
+          total: totalItems * 2, // Descarga (totalItems) + Inserción (totalItems)
+        ));
+      } catch (e) {
+        Logger.error('Error en transacción al guardar $entityType', context: LogContext.essential, error: e);
+        // Intentar guardar uno por uno si falla la transacción
+        for (final data in entityDataList) {
+          try {
+            await _saveEntityData(entityType, data);
+            insertedCount++;
+          } catch (e2) {
+            Logger.error('Error al guardar datos de $entityType', context: LogContext.essential, error: e2);
+          }
         }
       }
       
@@ -159,7 +178,6 @@ class DownloadService {
       currentEntity: 'Descarga completada',
       completed: totalItems * 2,
       total: totalItems * 2,
-      totalSizeBytes: totalSizeBytes,
     ));
   }
   
@@ -212,45 +230,36 @@ class DownloadService {
             total: count,
             totalSizeBytes: null, // Se pasa desde el nivel superior
           ));
-          
-          // Delay adicional entre recursos para evitar rate limiting
-          // Aumentado a 300ms para ser más conservador
-          await Future.delayed(const Duration(milliseconds: 300));
         } catch (e) {
-          // Si es "too many requests", esperar más tiempo y actualizar estado
-          if (e.toString().contains('429') || 
-              e.toString().contains('too many requests') ||
-              e.toString().contains('Too many requests')) {
-            // Actualizar estado para informar al usuario
+          // Si hay error, esperar 2 segundos y reintentar
+          Logger.error('Error al descargar recurso, reintentando...', context: LogContext.essential, error: e);
+          
+          // Actualizar estado para informar al usuario
+          onProgress?.call(DownloadProgress(
+            phase: phase,
+            currentEntity: '$entityType (reintentando...)',
+            completed: completed,
+            total: count,
+          ));
+          
+          // Esperar 2 segundos antes de reintentar
+          await Future.delayed(const Duration(seconds: 2));
+          
+          // Reintentar este recurso
+          try {
+            final data = await apiClient.getResourceByUrl(url);
+            await _saveEntityData(entityType, data);
+            completed++;
             onProgress?.call(DownloadProgress(
               phase: phase,
-              currentEntity: '$entityType (esperando por rate limit...)',
+              currentEntity: entityType,
               completed: completed,
               total: count,
+              totalSizeBytes: null, // Se pasa desde el nivel superior
             ));
-            
-            // Esperar más tiempo antes de reintentar
-            await Future.delayed(const Duration(seconds: 10));
-            
-            // Reintentar este recurso
-            try {
-              final data = await apiClient.getResourceByUrl(url);
-              await _saveEntityData(entityType, data);
-              completed++;
-              onProgress?.call(DownloadProgress(
-                phase: phase,
-                currentEntity: entityType,
-                completed: completed,
-                total: count,
-                totalSizeBytes: null, // Se pasa desde el nivel superior
-              ));
-            } catch (retryError) {
-              print('Error al reintentar descargar $url: $retryError');
-              // Si sigue fallando, saltar este recurso y continuar
-            }
-          } else {
-            // Continuar con el siguiente aunque falle uno
-            print('Error al descargar $url: $e');
+          } catch (retryError) {
+            Logger.error('Error al reintentar descargar recurso, saltando...', context: LogContext.essential, error: retryError);
+            // Si sigue fallando, saltar este recurso y continuar
           }
         }
       }
@@ -335,12 +344,27 @@ class DownloadService {
   /// y todas las pokedex tienen todos sus pokemon-species y pokemon descargados
   Future<bool> isRegionFullyDownloaded(int regionId) async {
     try {
+      final regionDao = RegionDao(database);
+      final region = await regionDao.getRegionById(regionId);
+      final regionName = region?.name ?? 'Región $regionId';
+      
       final incompletePokedexes = await getIncompletePokedexes(regionId);
       final isComplete = incompletePokedexes.isEmpty;
-      print('isRegionFullyDownloaded($regionId): ${isComplete ? "COMPLETA" : "INCOMPLETA"} (${incompletePokedexes.length} pokedexes incompletas)');
+      
+      if (isComplete) {
+        Logger.region('Completamente descargada', regionName: regionName);
+      } else {
+        Logger.region('Incompleta (${incompletePokedexes.length} pokedexes faltantes)', regionName: regionName);
+        // Log detallado para depuración
+        for (final url in incompletePokedexes) {
+          final apiId = _extractApiIdFromUrl(url);
+          Logger.pokedex('Pokedex incompleta', pokedexName: 'ID: $apiId');
+        }
+      }
+      
       return isComplete;
     } catch (e) {
-      print('Error al verificar región completa: $e');
+      Logger.error('Error al verificar región completa', context: LogContext.region, error: e);
       return false;
     }
   }
@@ -397,6 +421,7 @@ class DownloadService {
         
         // Verificar que cada entrada tenga su pokemon-species y al menos un pokemon
         // Verificación simplificada: solo comprobar que existan
+        bool isIncomplete = false;
         for (final entry in entries) {
           // Verificar que existe el pokemon-species
           final species = await (database.select(database.pokemonSpecies)
@@ -404,22 +429,26 @@ class DownloadService {
             .getSingleOrNull();
           
           if (species == null) {
-            incompleteUrls.add(pokedexUrl);
+            isIncomplete = true;
             break; // Esta pokedex está incompleta
           }
           
           // Verificar que existe al menos un pokemon de esta especie
           final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
           if (pokemons.isEmpty) {
-            incompleteUrls.add(pokedexUrl);
+            isIncomplete = true;
             break; // Esta pokedex está incompleta
           }
+        }
+        
+        if (isIncomplete) {
+          incompleteUrls.add(pokedexUrl);
         }
       }
       
       return incompleteUrls;
     } catch (e) {
-      print('Error al obtener pokedexes incompletas: $e');
+      Logger.error('Error al obtener pokedexes incompletas', context: LogContext.pokedex, error: e);
       return [];
     }
   }
@@ -519,19 +548,22 @@ class DownloadService {
         }
       }
       
-      // Calcular total de items a descargar
-      int totalItems = 0;
+      // FASE 1: Descargar todas las pokedexes (solo datos, sin entradas)
+      // Recopilar pokemon-species únicas con sus entry_numbers por pokedex
+      final Map<String, Set<Map<String, dynamic>>> speciesToPokedexEntries = {}; // speciesUrl -> Set de {pokedexApiId, entryNumber}
       final List<Map<String, dynamic>> pokedexInfoList = [];
       
       onProgress?.call(DownloadProgress(
         phase: DownloadPhase.regionData,
-        currentEntity: 'Calculando total de datos a descargar...',
+        currentEntity: 'Descargando info de las pokedexes. Registrándolas en base de datos...',
         completed: 0,
         total: 0,
       ));
       
-      // Pre-calcular totales solo para pokedexes incompletas
+      // Descargar todas las pokedexes y recopilar especies
+      int pokedexIndex = 0;
       for (final pokedexUrl in incompleteUrls) {
+        pokedexIndex++;
         try {
           // Si la pokedex existe pero está incompleta, eliminarla primero
           final pokedexApiId = _extractApiIdFromUrl(pokedexUrl);
@@ -548,84 +580,392 @@ class DownloadService {
           
           final pokedexData = await apiClient.getResourceByUrl(pokedexUrl);
           final pokemonEntries = pokedexData['pokemon_entries'] as List?;
-          final entryCount = pokemonEntries?.length ?? 0;
+          
+          // Guardar pokedex (sin entradas todavía)
+          await database.transaction(() async {
+            await _savePokedexOnly(pokedexData);
+          });
+          
+          // Recopilar especies únicas con sus entry_numbers por pokedex
+          if (pokemonEntries != null) {
+            for (final entry in pokemonEntries) {
+              final pokemonSpecies = entry['pokemon_species'] as Map<String, dynamic>?;
+              if (pokemonSpecies != null) {
+                final speciesUrl = pokemonSpecies['url'] as String?;
+                final entryNumber = _safeIntFromDynamic(entry['entry_number']);
+                if (speciesUrl != null && entryNumber != null) {
+                  if (!speciesToPokedexEntries.containsKey(speciesUrl)) {
+                    speciesToPokedexEntries[speciesUrl] = {};
+                  }
+                  speciesToPokedexEntries[speciesUrl]!.add({
+                    'pokedexApiId': pokedexApiId,
+                    'entryNumber': entryNumber,
+                  });
+                }
+              }
+            }
+          }
           
           pokedexInfoList.add({
             'url': pokedexUrl,
             'name': urlToName[pokedexUrl] ?? pokedexData['name'] as String? ?? 'Pokedex',
-            'entryCount': entryCount,
+            'apiId': pokedexApiId,
+            'data': pokedexData,
           });
           
-          totalItems += 1 + entryCount; // 1 pokedex + N pokemon-species
+          onProgress?.call(DownloadProgress(
+            phase: DownloadPhase.regionData,
+            currentEntity: 'Descargando pokedex ${pokedexIndex}/${incompleteUrls.length}: ${urlToName[pokedexUrl] ?? pokedexData['name'] as String? ?? 'Pokedex'}',
+            completed: pokedexIndex,
+            total: incompleteUrls.length,
+          ));
         } catch (e) {
-          print('Error al pre-calcular pokedex: $e');
+          Logger.error('Error al descargar pokedex', context: LogContext.pokedex, error: e);
         }
       }
       
-      int totalPokedex = pokedexInfoList.length;
-      int completedItems = 0;
-      int itemsBeforeCurrentPokedex = 0; // Items completados antes del pokedex actual
+      // Obtener lista de pokemon-species únicas
+      onProgress?.call(DownloadProgress(
+        phase: DownloadPhase.regionData,
+        currentEntity: 'Obteniendo lista de pokemon-species únicas...',
+        completed: pokedexInfoList.length,
+        total: pokedexInfoList.length,
+      ));
       
-      // Descargar cada pokedex y todo lo que cuelga de ella
-      for (int pokedexIndex = 0; pokedexIndex < pokedexInfoList.length; pokedexIndex++) {
-        final pokedexInfo = pokedexInfoList[pokedexIndex];
-        final pokedexUrl = pokedexInfo['url'] as String;
-        final pokedexName = pokedexInfo['name'] as String;
-        final entryCount = pokedexInfo['entryCount'] as int;
+      final uniqueSpeciesUrls = speciesToPokedexEntries.keys.toList();
+      final totalItems = pokedexInfoList.length + uniqueSpeciesUrls.length;
+      
+      // FASE 2: Descargar todas las especies únicas en batch
+      int completedItems = pokedexInfoList.length; // Ya descargamos las pokedexes
+      final Map<String, Map<String, dynamic>> downloadedSpeciesData = {}; // speciesUrl -> speciesData
+      
+      onProgress?.call(DownloadProgress(
+        phase: DownloadPhase.regionData,
+        currentEntity: 'Descargando todas las pokemon-species y sus datos relacionados (tipos, versiones, traducciones, etc.)...',
+        completed: completedItems,
+        total: totalItems,
+      ));
+      
+      for (int i = 0; i < uniqueSpeciesUrls.length; i++) {
+        final speciesUrl = uniqueSpeciesUrls[i];
+        try {
+          final speciesData = await apiClient.getResourceByUrl(speciesUrl);
+          downloadedSpeciesData[speciesUrl] = speciesData;
+          
+          // Guardar especie
+          await database.transaction(() async {
+            await _savePokemonSpecies(speciesData);
+          });
+          
+          // Descargar evolution chain si existe
+          final evolutionChainUrl = speciesData['evolution_chain']?['url'] as String?;
+          if (evolutionChainUrl != null) {
+            try {
+              await _downloadEvolutionChain(evolutionChainUrl);
+            } catch (e) {
+              Logger.error('Error al descargar evolution chain, reintentando...', context: LogContext.pokemon, error: e);
+              await Future.delayed(const Duration(seconds: 2));
+              await _downloadEvolutionChain(evolutionChainUrl);
+            }
+          }
+          
+          completedItems++;
+          onProgress?.call(DownloadProgress(
+            phase: DownloadPhase.regionData,
+            currentEntity: 'Descargando pokemon-species ${i + 1}/${uniqueSpeciesUrls.length} (incluye tipos, versiones, traducciones, etc.)',
+            completed: completedItems,
+            total: totalItems,
+          ));
+        } catch (e) {
+          Logger.error('Error al descargar especie, reintentando...', context: LogContext.pokemon, error: e);
+          await Future.delayed(const Duration(seconds: 2));
+          final speciesData = await apiClient.getResourceByUrl(speciesUrl);
+          downloadedSpeciesData[speciesUrl] = speciesData;
+          await database.transaction(() async {
+            await _savePokemonSpecies(speciesData);
+          });
+          
+          // Descargar evolution chain si existe
+          final evolutionChainUrl = speciesData['evolution_chain']?['url'] as String?;
+          if (evolutionChainUrl != null) {
+            try {
+              await _downloadEvolutionChain(evolutionChainUrl);
+            } catch (e) {
+              await Future.delayed(const Duration(seconds: 2));
+              await _downloadEvolutionChain(evolutionChainUrl);
+            }
+          }
+          
+          completedItems++;
+        }
+      }
+      
+      // FASE 3: Procesar variantes y descargar todos los pokemon únicos
+      onProgress?.call(DownloadProgress(
+        phase: DownloadPhase.regionData,
+        currentEntity: 'Procesando variantes y obteniendo lista de pokemon únicos...',
+        completed: completedItems,
+        total: totalItems,
+      ));
+      
+      final Set<String> uniquePokemonUrls = {};
+      for (final speciesData in downloadedSpeciesData.values) {
+        final variantInfo = await _processPokemonVariants(speciesData);
+        final defaultPokemon = variantInfo['default'] as Map<String, dynamic>?;
+        final regionalVariants = variantInfo['regional'] as List? ?? [];
+        final specialVariants = variantInfo['special'] as List? ?? [];
+        
+        if (defaultPokemon != null) {
+          uniquePokemonUrls.add(defaultPokemon['url'] as String);
+        }
+        for (final variant in regionalVariants) {
+          final pokemon = variant['pokemon'] as Map<String, dynamic>?;
+          if (pokemon != null) {
+            uniquePokemonUrls.add(pokemon['url'] as String);
+          }
+        }
+        for (final pokemon in specialVariants) {
+          uniquePokemonUrls.add(pokemon['url'] as String);
+        }
+      }
+      
+      // Actualizar total para incluir pokemon
+      final totalItemsWithPokemon = totalItems + uniquePokemonUrls.length;
+      
+      // Descargar todos los pokemon únicos
+      onProgress?.call(DownloadProgress(
+        phase: DownloadPhase.regionData,
+        currentEntity: 'Descargando todos los pokemon únicos (incluye stats, abilities, moves, sprites, etc.)...',
+        completed: completedItems,
+        total: totalItemsWithPokemon,
+      ));
+      
+      final List<String> pokemonUrlsList = uniquePokemonUrls.toList();
+      for (int i = 0; i < pokemonUrlsList.length; i++) {
+        final pokemonUrl = pokemonUrlsList[i];
+        try {
+          await _downloadPokemonComplete(pokemonUrl);
+          completedItems++;
+          onProgress?.call(DownloadProgress(
+            phase: DownloadPhase.regionData,
+            currentEntity: 'Descargando pokemon ${i + 1}/${pokemonUrlsList.length} (stats, abilities, moves, sprites, etc.)',
+            completed: completedItems,
+            total: totalItemsWithPokemon,
+          ));
+        } catch (e) {
+          Logger.error('Error al descargar pokemon, reintentando...', context: LogContext.pokemon, error: e);
+          await Future.delayed(const Duration(seconds: 2));
+          await _downloadPokemonComplete(pokemonUrl);
+          completedItems++;
+        }
+      }
+      
+      // FASE 4: Procesar variantes y asignar pokedex
+      onProgress?.call(DownloadProgress(
+        phase: DownloadPhase.regionData,
+        currentEntity: 'Guardando relaciones con pokedexes y procesando variantes...',
+        completed: completedItems,
+        total: totalItemsWithPokemon,
+      ));
+      
+      int speciesProcessed = 0;
+      final totalSpeciesToProcess = downloadedSpeciesData.length;
+      
+      for (final entry in downloadedSpeciesData.entries) {
+        final speciesUrl = entry.key;
+        final speciesData = entry.value;
+        speciesProcessed++;
+        
+        // Procesar variantes
+        final variantInfo = await _processPokemonVariants(speciesData);
         
         onProgress?.call(DownloadProgress(
           phase: DownloadPhase.regionData,
-          currentEntity: 'Descargando pokedex "${pokedexName}" (${pokedexIndex + 1}/$totalPokedex)',
-          completed: itemsBeforeCurrentPokedex,
-          total: totalItems,
+          currentEntity: 'Guardando relaciones: ${speciesProcessed}/$totalSpeciesToProcess especies procesadas',
+          completed: completedItems,
+          total: totalItemsWithPokemon,
         ));
+        final defaultPokemon = variantInfo['default'] as Map<String, dynamic>?;
+        final regionalVariants = variantInfo['regional'] as List? ?? [];
+        final specialVariants = variantInfo['special'] as List? ?? [];
         
-        // Incrementar por la pokedex misma
-        completedItems = itemsBeforeCurrentPokedex + 1;
+        // Obtener entry_numbers para esta especie de todas las pokedexes
+        final pokedexEntries = speciesToPokedexEntries[speciesUrl] ?? {};
         
-        // Descargar pokedex completa con callback de progreso detallado
-        await _downloadPokedexComplete(
-          pokedexUrl,
-          onProgress: (speciesIndex, totalSpecies) {
-            // Calcular items completados: items anteriores + pokedex (1) + especies descargadas
-            completedItems = itemsBeforeCurrentPokedex + 1 + (speciesIndex + 1);
-            onProgress?.call(DownloadProgress(
-              phase: DownloadPhase.regionData,
-              currentEntity: 'Descargando pokedex "${pokedexName}": Pokémon ${speciesIndex + 1}/$totalSpecies',
-              completed: completedItems,
-              total: totalItems,
-            ));
-          },
-        );
+        // Obtener especie de la DB
+        final speciesApiId = speciesData['id'] as int;
+        final species = await (database.select(database.pokemonSpecies)
+          ..where((t) => t.apiId.equals(speciesApiId)))
+          .getSingleOrNull();
         
-        // Actualizar items completados antes del siguiente pokedex
-        itemsBeforeCurrentPokedex += 1 + entryCount; // Pokedex + todas sus especies
-        completedItems = itemsBeforeCurrentPokedex;
+        if (species == null) continue;
         
-        await Future.delayed(const Duration(milliseconds: 300));
+        // Obtener pokemon default
+        if (defaultPokemon == null) continue;
+        
+        final defaultPokemonApiId = _extractApiIdFromUrl(defaultPokemon['url'] as String);
+        final defaultPokemonData = await (database.select(database.pokemon)
+          ..where((t) => t.apiId.equals(defaultPokemonApiId)))
+          .getSingleOrNull();
+        
+        if (defaultPokemonData == null) continue;
+        
+        // Identificar pokedexes de variantes regionales para excluirlas del default
+        final regionalPokedexApiIds = <int>{};
+        for (final variant in regionalVariants) {
+          final variantRegionId = variant['regionId'] as int?;
+          if (variantRegionId != null) {
+            final regionPokedexes = await pokedexDao.getPokedexByRegion(variantRegionId);
+            for (final pokedex in regionPokedexes) {
+              regionalPokedexApiIds.add(pokedex.apiId);
+            }
+          }
+        }
+        
+        // Asignar entradas de pokedex para el pokemon default
+        // (todas las pokedexes donde aparece la especie, excepto las de variantes regionales)
+        for (final entryInfo in pokedexEntries) {
+          final pokedexApiId = entryInfo['pokedexApiId'] as int;
+          final entryNumber = entryInfo['entryNumber'] as int;
+          
+          // Excluir pokedexes de variantes regionales y la nacional (se añade después)
+          if (regionalPokedexApiIds.contains(pokedexApiId)) continue;
+          
+          final pokedex = await pokedexDao.getPokedexByApiId(pokedexApiId);
+          if (pokedex != null && pokedex.name != 'national') {
+            try {
+              await database.transaction(() async {
+                final entryCompanion = PokedexEntriesCompanion.insert(
+                  pokedexId: pokedex.id,
+                  pokemonSpeciesId: species.id,
+                  entryNumber: entryNumber,
+                );
+                await database.into(database.pokedexEntries).insert(
+                  entryCompanion,
+                  mode: InsertMode.replace,
+                );
+              });
+            } catch (e) {
+              Logger.error('Error al guardar entrada de pokedex', context: LogContext.pokedex, error: e);
+            }
+          }
+        }
+        
+        // Asignar variantes regionales a sus pokedexes correspondientes
+        for (final variant in regionalVariants) {
+          final pokemon = variant['pokemon'] as Map<String, dynamic>?;
+          final variantRegionId = variant['regionId'] as int?;
+          if (pokemon == null || variantRegionId == null) continue;
+          
+          final variantPokemonApiId = _extractApiIdFromUrl(pokemon['url'] as String);
+          final variantPokemonData = await (database.select(database.pokemon)
+            ..where((t) => t.apiId.equals(variantPokemonApiId)))
+            .getSingleOrNull();
+          
+          if (variantPokemonData != null) {
+            // Obtener pokedexes de la región de la variante
+            final regionPokedexes = await pokedexDao.getPokedexByRegion(variantRegionId);
+            
+            // Asignar a las pokedexes de esa región (solo las que están en pokedexEntries)
+            for (final entryInfo in pokedexEntries) {
+              final pokedexApiId = entryInfo['pokedexApiId'] as int;
+              final entryNumber = entryInfo['entryNumber'] as int;
+              
+              // Verificar si esta pokedex pertenece a la región de la variante
+              for (final regionPokedex in regionPokedexes) {
+                if (regionPokedex.apiId == pokedexApiId && regionPokedex.name != 'national') {
+                  try {
+                    await database.transaction(() async {
+                      final entryCompanion = PokedexEntriesCompanion.insert(
+                        pokedexId: regionPokedex.id,
+                        pokemonSpeciesId: species.id,
+                        entryNumber: entryNumber,
+                      );
+                      await database.into(database.pokedexEntries).insert(
+                        entryCompanion,
+                        mode: InsertMode.replace,
+                      );
+                    });
+                  } catch (e) {
+                    Logger.error('Error al guardar entrada de pokedex para variante', context: LogContext.pokedex, error: e);
+                  }
+                  break;
+                }
+              }
+            }
+            
+            // Guardar relación de variante
+            await database.pokemonVariantsDao.insertVariant(
+              pokemonId: defaultPokemonData.id,
+              variantPokemonId: variantPokemonData.id,
+            );
+          }
+        }
+        
+        // Asignar variantes especiales (solo relación, sin pokedex)
+        for (final pokemon in specialVariants) {
+          final variantPokemonApiId = _extractApiIdFromUrl(pokemon['url'] as String);
+          final variantPokemonData = await (database.select(database.pokemon)
+            ..where((t) => t.apiId.equals(variantPokemonApiId)))
+            .getSingleOrNull();
+          
+          if (variantPokemonData != null) {
+            await database.pokemonVariantsDao.insertVariant(
+              pokemonId: defaultPokemonData.id,
+              variantPokemonId: variantPokemonData.id,
+            );
+          }
+        }
+        
+        // Asignar pokedex nacional a todos (default y variantes regionales comparten el mismo entry_number)
+        final nationalEntryNumber = _getNationalEntryNumber(speciesData);
+        if (nationalEntryNumber != null) {
+          final nationalPokedex = await (database.select(database.pokedex)
+            ..where((t) => t.name.equals('national')))
+            .getSingleOrNull();
+          
+          if (nationalPokedex != null) {
+            try {
+              await database.transaction(() async {
+                final entryCompanion = PokedexEntriesCompanion.insert(
+                  pokedexId: nationalPokedex.id,
+                  pokemonSpeciesId: species.id,
+                  entryNumber: nationalEntryNumber,
+                );
+                await database.into(database.pokedexEntries).insert(
+                  entryCompanion,
+                  mode: InsertMode.replace,
+                );
+              });
+            } catch (e) {
+              Logger.error('Error al guardar entrada de pokedex nacional', context: LogContext.pokedex, error: e);
+            }
+          }
+        }
       }
       
       onProgress?.call(DownloadProgress(
         phase: DownloadPhase.regionData,
-        currentEntity: 'Pokedexes incompletas descargadas',
-        completed: totalItems,
-        total: totalItems,
+        currentEntity: 'Descarga completada. Todas las relaciones guardadas.',
+        completed: totalItemsWithPokemon,
+        total: totalItemsWithPokemon,
       ));
     } catch (e) {
-      print('Error al descargar pokedexes incompletas: $e');
+      Logger.error('Error al descargar pokedexes incompletas', context: LogContext.pokedex, error: e);
       rethrow;
     }
   }
   
   /// Descargar toda una región en transacción
   /// Si la región está a medias, se elimina todo y se descarga de nuevo
-  /// (Método original mantenido por compatibilidad)
+  /// Usa el mismo flujo optimizado que downloadIncompletePokedexes
   Future<void> downloadRegionComplete({
     required int regionId,
     ProgressCallback? onProgress,
   }) async {
     try {
       final regionDao = RegionDao(database);
+      final pokedexDao = PokedexDao(database);
       
       // Obtener la región
       final region = await regionDao.getRegionById(regionId);
@@ -654,9 +994,9 @@ class DownloadService {
       final regionData = await apiClient.getResourceByUrl(
         '${ApiClient.baseUrl}/region/${region.apiId}',
       );
+      final allPokedexes = regionData['pokedexes'] as List?;
       
-      final pokedexes = regionData['pokedexes'] as List?;
-      if (pokedexes == null || pokedexes.isEmpty) {
+      if (allPokedexes == null || allPokedexes.isEmpty) {
         onProgress?.call(DownloadProgress(
           phase: DownloadPhase.regionData,
           currentEntity: 'Región sin pokedex',
@@ -666,88 +1006,393 @@ class DownloadService {
         return; // Región sin pokedex
       }
       
-      // Calcular total de items a descargar (pokedex + pokemon-species + pokemon)
-      int totalItems = 0;
+      // Crear lista de URLs de todas las pokedexes (simular incompletas para usar el mismo flujo)
+      final List<String> allPokedexUrls = [];
+      final Map<String, String> urlToName = {};
+      
+      for (final pokedexRef in allPokedexes) {
+        final url = pokedexRef['url'] as String;
+        final name = pokedexRef['name'] as String? ?? 'Pokedex';
+        allPokedexUrls.add(url);
+        urlToName[url] = name;
+      }
+      
+      // Usar el mismo flujo optimizado que downloadIncompletePokedexes
+      // FASE 1: Descargar todas las pokedexes (solo datos, sin entradas)
+      final Map<String, Set<Map<String, dynamic>>> speciesToPokedexEntries = {};
       final List<Map<String, dynamic>> pokedexInfoList = [];
       
       onProgress?.call(DownloadProgress(
         phase: DownloadPhase.regionData,
-        currentEntity: 'Calculando total de datos a descargar...',
+        currentEntity: 'Descargando info de las pokedexes. Registrándolas en base de datos...',
         completed: 0,
         total: 0,
       ));
       
-      // Pre-calcular totales
-      for (final pokedexRef in pokedexes) {
-        final pokedexUrl = pokedexRef['url'] as String;
+      int pokedexIndex = 0;
+      for (final pokedexUrl in allPokedexUrls) {
+        pokedexIndex++;
         try {
           final pokedexData = await apiClient.getResourceByUrl(pokedexUrl);
           final pokemonEntries = pokedexData['pokemon_entries'] as List?;
-          final entryCount = pokemonEntries?.length ?? 0;
+          final pokedexApiId = _extractApiIdFromUrl(pokedexUrl);
+          
+          // Guardar pokedex (sin entradas todavía)
+          await database.transaction(() async {
+            await _savePokedexOnly(pokedexData);
+          });
+          
+          // Recopilar especies únicas con sus entry_numbers por pokedex
+          if (pokemonEntries != null) {
+            for (final entry in pokemonEntries) {
+              final pokemonSpecies = entry['pokemon_species'] as Map<String, dynamic>?;
+              if (pokemonSpecies != null) {
+                final speciesUrl = pokemonSpecies['url'] as String?;
+                final entryNumber = _safeIntFromDynamic(entry['entry_number']);
+                if (speciesUrl != null && entryNumber != null) {
+                  if (!speciesToPokedexEntries.containsKey(speciesUrl)) {
+                    speciesToPokedexEntries[speciesUrl] = {};
+                  }
+                  speciesToPokedexEntries[speciesUrl]!.add({
+                    'pokedexApiId': pokedexApiId,
+                    'entryNumber': entryNumber,
+                  });
+                }
+              }
+            }
+          }
           
           pokedexInfoList.add({
             'url': pokedexUrl,
-            'name': pokedexData['name'] as String? ?? 'Pokedex',
-            'entryCount': entryCount,
+            'name': urlToName[pokedexUrl] ?? pokedexData['name'] as String? ?? 'Pokedex',
+            'apiId': pokedexApiId,
+            'data': pokedexData,
           });
           
-          totalItems += 1 + entryCount; // 1 pokedex + N pokemon-species
+          onProgress?.call(DownloadProgress(
+            phase: DownloadPhase.regionData,
+            currentEntity: 'Descargando pokedex ${pokedexIndex}/${allPokedexUrls.length}: ${urlToName[pokedexUrl] ?? pokedexData['name'] as String? ?? 'Pokedex'}',
+            completed: pokedexIndex,
+            total: allPokedexUrls.length,
+          ));
         } catch (e) {
-          print('Error al pre-calcular pokedex: $e');
+          Logger.error('Error al descargar pokedex', context: LogContext.pokedex, error: e);
         }
       }
       
-      int totalPokedex = pokedexInfoList.length;
-      int completedItems = 0;
-      int itemsBeforeCurrentPokedex = 0; // Items completados antes del pokedex actual
+      // Obtener lista de pokemon-species únicas
+      onProgress?.call(DownloadProgress(
+        phase: DownloadPhase.regionData,
+        currentEntity: 'Obteniendo lista de pokemon-species únicas...',
+        completed: pokedexInfoList.length,
+        total: pokedexInfoList.length,
+      ));
       
-      // Descargar cada pokedex y todo lo que cuelga de ella
-      for (int pokedexIndex = 0; pokedexIndex < pokedexInfoList.length; pokedexIndex++) {
-        final pokedexInfo = pokedexInfoList[pokedexIndex];
-        final pokedexUrl = pokedexInfo['url'] as String;
-        final pokedexName = pokedexInfo['name'] as String;
-        final entryCount = pokedexInfo['entryCount'] as int;
+      final uniqueSpeciesUrls = speciesToPokedexEntries.keys.toList();
+      final totalItems = pokedexInfoList.length + uniqueSpeciesUrls.length;
+      
+      // FASE 2: Descargar todas las especies únicas en batch
+      int completedItems = pokedexInfoList.length;
+      final Map<String, Map<String, dynamic>> downloadedSpeciesData = {};
+      
+      onProgress?.call(DownloadProgress(
+        phase: DownloadPhase.regionData,
+        currentEntity: 'Descargando todas las pokemon-species y sus datos relacionados (tipos, versiones, traducciones, etc.)...',
+        completed: completedItems,
+        total: totalItems,
+      ));
+      
+      for (int i = 0; i < uniqueSpeciesUrls.length; i++) {
+        final speciesUrl = uniqueSpeciesUrls[i];
+        try {
+          final speciesData = await apiClient.getResourceByUrl(speciesUrl);
+          downloadedSpeciesData[speciesUrl] = speciesData;
+          
+          await database.transaction(() async {
+            await _savePokemonSpecies(speciesData);
+          });
+          
+          final evolutionChainUrl = speciesData['evolution_chain']?['url'] as String?;
+          if (evolutionChainUrl != null) {
+            try {
+              await _downloadEvolutionChain(evolutionChainUrl);
+            } catch (e) {
+              Logger.error('Error al descargar evolution chain, reintentando...', context: LogContext.pokemon, error: e);
+              await Future.delayed(const Duration(seconds: 2));
+              await _downloadEvolutionChain(evolutionChainUrl);
+            }
+          }
+          
+          completedItems++;
+          onProgress?.call(DownloadProgress(
+            phase: DownloadPhase.regionData,
+            currentEntity: 'Descargando pokemon-species ${i + 1}/${uniqueSpeciesUrls.length} (incluye tipos, versiones, traducciones, etc.)',
+            completed: completedItems,
+            total: totalItems,
+          ));
+        } catch (e) {
+          Logger.error('Error al descargar especie, reintentando...', context: LogContext.pokemon, error: e);
+          await Future.delayed(const Duration(seconds: 2));
+          final speciesData = await apiClient.getResourceByUrl(speciesUrl);
+          downloadedSpeciesData[speciesUrl] = speciesData;
+          await database.transaction(() async {
+            await _savePokemonSpecies(speciesData);
+          });
+          
+          final evolutionChainUrl = speciesData['evolution_chain']?['url'] as String?;
+          if (evolutionChainUrl != null) {
+            try {
+              await _downloadEvolutionChain(evolutionChainUrl);
+            } catch (e) {
+              await Future.delayed(const Duration(seconds: 2));
+              await _downloadEvolutionChain(evolutionChainUrl);
+            }
+          }
+          
+          completedItems++;
+        }
+      }
+      
+      // FASE 3: Procesar variantes y descargar todos los pokemon únicos
+      onProgress?.call(DownloadProgress(
+        phase: DownloadPhase.regionData,
+        currentEntity: 'Procesando variantes y obteniendo lista de pokemon únicos...',
+        completed: completedItems,
+        total: totalItems,
+      ));
+      
+      final Set<String> uniquePokemonUrls = {};
+      for (final speciesData in downloadedSpeciesData.values) {
+        final variantInfo = await _processPokemonVariants(speciesData);
+        final defaultPokemon = variantInfo['default'] as Map<String, dynamic>?;
+        final regionalVariants = variantInfo['regional'] as List? ?? [];
+        final specialVariants = variantInfo['special'] as List? ?? [];
+        
+        if (defaultPokemon != null) {
+          uniquePokemonUrls.add(defaultPokemon['url'] as String);
+        }
+        for (final variant in regionalVariants) {
+          final pokemon = variant['pokemon'] as Map<String, dynamic>?;
+          if (pokemon != null) {
+            uniquePokemonUrls.add(pokemon['url'] as String);
+          }
+        }
+        for (final pokemon in specialVariants) {
+          uniquePokemonUrls.add(pokemon['url'] as String);
+        }
+      }
+      
+      final totalItemsWithPokemon = totalItems + uniquePokemonUrls.length;
+      
+      onProgress?.call(DownloadProgress(
+        phase: DownloadPhase.regionData,
+        currentEntity: 'Descargando todos los pokemon únicos (incluye stats, abilities, moves, sprites, etc.)...',
+        completed: completedItems,
+        total: totalItemsWithPokemon,
+      ));
+      
+      final List<String> pokemonUrlsList = uniquePokemonUrls.toList();
+      for (int i = 0; i < pokemonUrlsList.length; i++) {
+        final pokemonUrl = pokemonUrlsList[i];
+        try {
+          await _downloadPokemonComplete(pokemonUrl);
+          completedItems++;
+          onProgress?.call(DownloadProgress(
+            phase: DownloadPhase.regionData,
+            currentEntity: 'Descargando pokemon ${i + 1}/${pokemonUrlsList.length} (stats, abilities, moves, sprites, etc.)',
+            completed: completedItems,
+            total: totalItemsWithPokemon,
+          ));
+        } catch (e) {
+          Logger.error('Error al descargar pokemon, reintentando...', context: LogContext.pokemon, error: e);
+          await Future.delayed(const Duration(seconds: 2));
+          await _downloadPokemonComplete(pokemonUrl);
+          completedItems++;
+        }
+      }
+      
+      // FASE 4: Procesar variantes y asignar pokedex
+      onProgress?.call(DownloadProgress(
+        phase: DownloadPhase.regionData,
+        currentEntity: 'Guardando relaciones con pokedexes y procesando variantes...',
+        completed: completedItems,
+        total: totalItemsWithPokemon,
+      ));
+      
+      int speciesProcessed = 0;
+      final totalSpeciesToProcess = downloadedSpeciesData.length;
+      
+      for (final entry in downloadedSpeciesData.entries) {
+        final speciesUrl = entry.key;
+        final speciesData = entry.value;
+        speciesProcessed++;
+        
+        final variantInfo = await _processPokemonVariants(speciesData);
         
         onProgress?.call(DownloadProgress(
           phase: DownloadPhase.regionData,
-          currentEntity: 'Descargando pokedex "${pokedexName}" (${pokedexIndex + 1}/$totalPokedex)',
-          completed: itemsBeforeCurrentPokedex,
-          total: totalItems,
+          currentEntity: 'Guardando relaciones: ${speciesProcessed}/$totalSpeciesToProcess especies procesadas',
+          completed: completedItems,
+          total: totalItemsWithPokemon,
         ));
         
-        // Incrementar por la pokedex misma
-        completedItems = itemsBeforeCurrentPokedex + 1;
+        final defaultPokemon = variantInfo['default'] as Map<String, dynamic>?;
+        final regionalVariants = variantInfo['regional'] as List? ?? [];
+        final specialVariants = variantInfo['special'] as List? ?? [];
         
-        // Descargar pokedex completa con callback de progreso detallado
-        await _downloadPokedexComplete(
-          pokedexUrl,
-          onProgress: (speciesIndex, totalSpecies) {
-            // Calcular items completados: items anteriores + pokedex (1) + especies descargadas
-            completedItems = itemsBeforeCurrentPokedex + 1 + (speciesIndex + 1);
-            onProgress?.call(DownloadProgress(
-              phase: DownloadPhase.regionData,
-              currentEntity: 'Descargando pokedex "${pokedexName}": Pokémon ${speciesIndex + 1}/$totalSpecies',
-              completed: completedItems,
-              total: totalItems,
-            ));
-          },
-        );
+        final pokedexEntries = speciesToPokedexEntries[speciesUrl] ?? {};
         
-        // Actualizar items completados antes del siguiente pokedex
-        itemsBeforeCurrentPokedex += 1 + entryCount; // Pokedex + todas sus especies
-        completedItems = itemsBeforeCurrentPokedex;
+        final speciesApiId = speciesData['id'] as int;
+        final species = await (database.select(database.pokemonSpecies)
+          ..where((t) => t.apiId.equals(speciesApiId)))
+          .getSingleOrNull();
         
-        await Future.delayed(const Duration(milliseconds: 300));
+        if (species == null) continue;
+        
+        if (defaultPokemon == null) continue;
+        
+        final defaultPokemonApiId = _extractApiIdFromUrl(defaultPokemon['url'] as String);
+        final defaultPokemonData = await (database.select(database.pokemon)
+          ..where((t) => t.apiId.equals(defaultPokemonApiId)))
+          .getSingleOrNull();
+        
+        if (defaultPokemonData == null) continue;
+        
+        final regionalPokedexApiIds = <int>{};
+        for (final variant in regionalVariants) {
+          final variantRegionId = variant['regionId'] as int?;
+          if (variantRegionId != null) {
+            final regionPokedexes = await pokedexDao.getPokedexByRegion(variantRegionId);
+            for (final pokedex in regionPokedexes) {
+              regionalPokedexApiIds.add(pokedex.apiId);
+            }
+          }
+        }
+        
+        // Asignar entradas de pokedex para el pokemon default
+        for (final entryInfo in pokedexEntries) {
+          final pokedexApiId = entryInfo['pokedexApiId'] as int;
+          final entryNumber = entryInfo['entryNumber'] as int;
+          
+          if (regionalPokedexApiIds.contains(pokedexApiId)) continue;
+          
+          final pokedex = await pokedexDao.getPokedexByApiId(pokedexApiId);
+          if (pokedex != null && pokedex.name != 'national') {
+            try {
+              await database.transaction(() async {
+                final entryCompanion = PokedexEntriesCompanion.insert(
+                  pokedexId: pokedex.id,
+                  pokemonSpeciesId: species.id,
+                  entryNumber: entryNumber,
+                );
+                await database.into(database.pokedexEntries).insert(
+                  entryCompanion,
+                  mode: InsertMode.replace,
+                );
+              });
+            } catch (e) {
+              Logger.error('Error al guardar entrada de pokedex', context: LogContext.pokedex, error: e);
+            }
+          }
+        }
+        
+        // Asignar variantes regionales
+        for (final variant in regionalVariants) {
+          final pokemon = variant['pokemon'] as Map<String, dynamic>?;
+          final variantRegionId = variant['regionId'] as int?;
+          if (pokemon == null || variantRegionId == null) continue;
+          
+          final variantPokemonApiId = _extractApiIdFromUrl(pokemon['url'] as String);
+          final variantPokemonData = await (database.select(database.pokemon)
+            ..where((t) => t.apiId.equals(variantPokemonApiId)))
+            .getSingleOrNull();
+          
+          if (variantPokemonData != null) {
+            final regionPokedexes = await pokedexDao.getPokedexByRegion(variantRegionId);
+            
+            for (final entryInfo in pokedexEntries) {
+              final pokedexApiId = entryInfo['pokedexApiId'] as int;
+              final entryNumber = entryInfo['entryNumber'] as int;
+              
+              for (final regionPokedex in regionPokedexes) {
+                if (regionPokedex.apiId == pokedexApiId && regionPokedex.name != 'national') {
+                  try {
+                    await database.transaction(() async {
+                      final entryCompanion = PokedexEntriesCompanion.insert(
+                        pokedexId: regionPokedex.id,
+                        pokemonSpeciesId: species.id,
+                        entryNumber: entryNumber,
+                      );
+                      await database.into(database.pokedexEntries).insert(
+                        entryCompanion,
+                        mode: InsertMode.replace,
+                      );
+                    });
+                  } catch (e) {
+                    Logger.error('Error al guardar entrada de pokedex para variante', context: LogContext.pokedex, error: e);
+                  }
+                  break;
+                }
+              }
+            }
+            
+            await database.pokemonVariantsDao.insertVariant(
+              pokemonId: defaultPokemonData.id,
+              variantPokemonId: variantPokemonData.id,
+            );
+          }
+        }
+        
+        // Asignar variantes especiales
+        for (final pokemon in specialVariants) {
+          final variantPokemonApiId = _extractApiIdFromUrl(pokemon['url'] as String);
+          final variantPokemonData = await (database.select(database.pokemon)
+            ..where((t) => t.apiId.equals(variantPokemonApiId)))
+            .getSingleOrNull();
+          
+          if (variantPokemonData != null) {
+            await database.pokemonVariantsDao.insertVariant(
+              pokemonId: defaultPokemonData.id,
+              variantPokemonId: variantPokemonData.id,
+            );
+          }
+        }
+        
+        // Asignar pokedex nacional
+        final nationalEntryNumber = _getNationalEntryNumber(speciesData);
+        if (nationalEntryNumber != null) {
+          final nationalPokedex = await (database.select(database.pokedex)
+            ..where((t) => t.name.equals('national')))
+            .getSingleOrNull();
+          
+          if (nationalPokedex != null) {
+            try {
+              await database.transaction(() async {
+                final entryCompanion = PokedexEntriesCompanion.insert(
+                  pokedexId: nationalPokedex.id,
+                  pokemonSpeciesId: species.id,
+                  entryNumber: nationalEntryNumber,
+                );
+                await database.into(database.pokedexEntries).insert(
+                  entryCompanion,
+                  mode: InsertMode.replace,
+                );
+              });
+            } catch (e) {
+              Logger.error('Error al guardar entrada de pokedex nacional', context: LogContext.pokedex, error: e);
+            }
+          }
+        }
       }
       
       onProgress?.call(DownloadProgress(
         phase: DownloadPhase.regionData,
-        currentEntity: 'Región descargada completamente',
-        completed: totalItems,
-        total: totalItems,
+        currentEntity: 'Descarga completada. Todas las relaciones guardadas.',
+        completed: totalItemsWithPokemon,
+        total: totalItemsWithPokemon,
       ));
     } catch (e) {
-      print('Error al descargar región completa: $e');
+      Logger.error('Error al descargar región completa', context: LogContext.region, error: e);
       rethrow;
     }
   }
@@ -776,14 +1421,24 @@ class DownloadService {
   Future<void> _downloadPokedexComplete(
     String pokedexUrl, {
     void Function(int speciesIndex, int totalSpecies)? onProgress,
+    void Function(String speciesUrl)? onSpeciesDownloaded,
   }) async {
-    // Descargar datos de la pokedex desde la API
-    final pokedexData = await apiClient.getResourceByUrl(pokedexUrl);
+    // Descargar datos de la pokedex desde la API con reintento
+    Map<String, dynamic> pokedexData;
+    try {
+      pokedexData = await apiClient.getResourceByUrl(pokedexUrl);
+    } catch (e) {
+      Logger.error('Error al descargar pokedex, reintentando...', context: LogContext.pokedex, error: e);
+      await Future.delayed(const Duration(seconds: 2));
+      pokedexData = await apiClient.getResourceByUrl(pokedexUrl);
+    }
     
-    // Guardar pokedex y todo lo que cuelga en una transacción
+    final pokedexName = pokedexData['name'] as String? ?? 'Pokedex';
+    Logger.pokedex('Iniciando descarga', pokedexName: pokedexName);
+    
+    // Guardar pokedex (sin entradas todavía, se guardarán después)
     await database.transaction(() async {
-      // Guardar pokedex
-      await _savePokedex(pokedexData);
+      await _savePokedexOnly(pokedexData);
     });
     
     // Obtener entradas de pokemon
@@ -794,28 +1449,70 @@ class DownloadService {
     
     final totalSpecies = pokemonEntries.length;
     
-    // Descargar cada pokemon-species y sus datos (fuera de transacción para llamadas API)
+    // Obtener el ID de la pokedex guardada
+    final pokedexApiId = pokedexData['id'] as int;
+    final pokedex = await (database.select(database.pokedex)
+      ..where((t) => t.apiId.equals(pokedexApiId)))
+      .getSingle();
+    
+    // Descargar cada pokemon-species y sus datos, y guardar la entrada de pokedex
     for (int speciesIndex = 0; speciesIndex < pokemonEntries.length; speciesIndex++) {
       final entry = pokemonEntries[speciesIndex];
       final pokemonSpecies = entry['pokemon_species'] as Map<String, dynamic>?;
       if (pokemonSpecies == null) continue;
       
       final speciesUrl = pokemonSpecies['url'] as String;
+      final entryNumber = _safeIntFromDynamic(entry['entry_number']);
       
       // Notificar progreso
       onProgress?.call(speciesIndex, totalSpecies);
       
       // Descargar pokemon-species (esto también usa transacciones internamente)
-      await _downloadPokemonSpeciesComplete(speciesUrl);
+      try {
+        await _downloadPokemonSpeciesComplete(speciesUrl);
+        // Notificar que esta especie fue descargada
+        onSpeciesDownloaded?.call(speciesUrl);
+      } catch (e) {
+        Logger.error('Error al descargar pokemon-species, reintentando...', context: LogContext.pokemon, error: e);
+        await Future.delayed(const Duration(seconds: 2));
+        await _downloadPokemonSpeciesComplete(speciesUrl);
+        // Notificar que esta especie fue descargada (después del reintento)
+        onSpeciesDownloaded?.call(speciesUrl);
+      }
       
-      await Future.delayed(const Duration(milliseconds: 300));
+      // Ahora que el pokemon-species está descargado, guardar la entrada de pokedex
+      if (entryNumber != null) {
+        try {
+          final speciesApiId = _extractApiIdFromUrl(speciesUrl);
+          final species = await (database.select(database.pokemonSpecies)
+            ..where((t) => t.apiId.equals(speciesApiId)))
+            .getSingleOrNull();
+          
+          if (species != null) {
+            await database.transaction(() async {
+              final entryCompanion = PokedexEntriesCompanion(
+                pokedexId: Value(pokedex.id),
+                pokemonSpeciesId: Value(species.id),
+                entryNumber: Value(entryNumber),
+              );
+              
+              await database.into(database.pokedexEntries).insert(
+                entryCompanion,
+                mode: InsertMode.replace,
+              );
+            });
+          }
+        } catch (e) {
+          Logger.error('Error al guardar entrada de pokedex', context: LogContext.pokedex, error: e);
+        }
+      }
     }
+    
+    Logger.pokedex('Descarga completada', pokedexName: pokedexName);
   }
   
-  /// Guardar pokedex
-  Future<void> _savePokedex(Map<String, dynamic> data) async {
-    // TODO: Implementar mapper para pokedex
-    // Por ahora, guardar datos básicos
+  /// Guardar solo la pokedex (sin entradas, se guardarán después de descargar pokemon-species)
+  Future<void> _savePokedexOnly(Map<String, dynamic> data) async {
     final apiId = data['id'] as int;
     final name = data['name'] as String;
     final isMainSeries = data['is_main_series'] as bool? ?? false;
@@ -830,7 +1527,7 @@ class DownloadService {
         final region = await regionDao.getRegionByApiId(regionApiId);
         regionId = region?.id;
       } catch (e) {
-        print('Error al extraer regionId de URL $regionUrl: $e');
+        Logger.error('Error al extraer regionId de URL', context: LogContext.region, error: e);
         // Continuar sin regionId
       }
     }
@@ -849,7 +1546,7 @@ class DownloadService {
       color = ColorGenerator.generatePastelColor(apiId);
     }
     
-    // Guardar pokedex
+    // Guardar pokedex (sin entradas todavía)
     final companion = PokedexCompanion(
       apiId: Value(apiId),
       name: Value(name),
@@ -864,66 +1561,23 @@ class DownloadService {
       companion,
       mode: InsertMode.replace,
     );
-    
-    // Guardar entradas de pokedex
-    final pokemonEntries = data['pokemon_entries'] as List?;
-    if (pokemonEntries != null) {
-      final pokedex = await (database.select(database.pokedex)
-        ..where((t) => t.apiId.equals(apiId)))
-        .getSingle();
-      
-      for (final entry in pokemonEntries) {
-        final entryNumber = _safeIntFromDynamic(entry['entry_number']);
-        if (entryNumber == null) {
-          print('Advertencia: entrada sin entry_number válido, saltando...');
-          continue;
-        }
-        
-        final pokemonSpecies = entry['pokemon_species'] as Map<String, dynamic>?;
-        if (pokemonSpecies == null) {
-          print('Advertencia: entrada sin pokemon_species, saltando...');
-          continue;
-        }
-        
-        final speciesUrl = pokemonSpecies['url'] as String?;
-        if (speciesUrl == null || speciesUrl.isEmpty) {
-          print('Advertencia: pokemon_species sin URL, saltando...');
-          continue;
-        }
-        
-        int speciesApiId;
-        try {
-          speciesApiId = _extractApiIdFromUrl(speciesUrl);
-        } catch (e) {
-          print('Error al extraer ID de URL $speciesUrl: $e');
-          continue; // Saltar esta entrada y continuar con la siguiente
-        }
-        
-        // Obtener o crear pokemon species
-        final species = await (database.select(database.pokemonSpecies)
-          ..where((t) => t.apiId.equals(speciesApiId)))
-          .getSingleOrNull();
-        
-        if (species != null) {
-          final entryCompanion = PokedexEntriesCompanion(
-            pokedexId: Value(pokedex.id),
-            pokemonSpeciesId: Value(species.id),
-            entryNumber: Value(entryNumber),
-          );
-          
-          await database.into(database.pokedexEntries).insert(
-            entryCompanion,
-            mode: InsertMode.replace,
-          );
-        }
-      }
-    }
   }
   
   /// Descargar pokemon-species completo y todo lo que cuelga
+  /// Ahora procesa variantes y asigna pokedex según las reglas
   Future<void> _downloadPokemonSpeciesComplete(String speciesUrl) async {
-    // Descargar datos desde la API
-    final speciesData = await apiClient.getResourceByUrl(speciesUrl);
+    // Asegurar que existe la región Nacional
+    await _ensureNationalRegionExists();
+    
+    // Descargar datos desde la API con reintento
+    Map<String, dynamic> speciesData;
+    try {
+      speciesData = await apiClient.getResourceByUrl(speciesUrl);
+    } catch (e) {
+      Logger.error('Error al descargar species, reintentando...', context: LogContext.pokemon, error: e);
+      await Future.delayed(const Duration(seconds: 2));
+      speciesData = await apiClient.getResourceByUrl(speciesUrl);
+    }
     
     // Guardar pokemon-species en transacción
     await database.transaction(() async {
@@ -933,20 +1587,123 @@ class DownloadService {
     // Descargar evolution chain si existe
     final evolutionChainUrl = speciesData['evolution_chain']?['url'] as String?;
     if (evolutionChainUrl != null) {
-      await _downloadEvolutionChain(evolutionChainUrl);
+      try {
+        await _downloadEvolutionChain(evolutionChainUrl);
+      } catch (e) {
+        Logger.error('Error al descargar evolution chain, reintentando...', context: LogContext.pokemon, error: e);
+        await Future.delayed(const Duration(seconds: 2));
+        await _downloadEvolutionChain(evolutionChainUrl);
+      }
     }
     
-    // Descargar todas las variedades (pokemon)
-    final varieties = speciesData['varieties'] as List?;
-    if (varieties != null) {
-      for (final variety in varieties) {
-        final pokemon = variety['pokemon'] as Map<String, dynamic>?;
-        if (pokemon == null) continue;
-        
-        final pokemonUrl = pokemon['url'] as String;
+    // Procesar variantes
+    final variantInfo = await _processPokemonVariants(speciesData);
+    final defaultPokemon = variantInfo['default'] as Map<String, dynamic>?;
+    final regionalVariants = variantInfo['regional'] as List? ?? [];
+    final specialVariants = variantInfo['special'] as List? ?? [];
+    
+    // Descargar pokemon default
+    if (defaultPokemon != null) {
+      final pokemonUrl = defaultPokemon['url'] as String;
+      try {
         await _downloadPokemonComplete(pokemonUrl);
         
-        await Future.delayed(const Duration(milliseconds: 300));
+        // Obtener pokemon de la DB para asignar pokedex
+        final pokemonApiId = _extractApiIdFromUrl(pokemonUrl);
+        final pokemon = await (database.select(database.pokemon)
+          ..where((t) => t.apiId.equals(pokemonApiId)))
+          .getSingleOrNull();
+        
+        if (pokemon != null) {
+          await _assignPokedexToPokemon(
+            speciesData: speciesData,
+            variantInfo: variantInfo,
+            isDefault: true,
+            regionId: null,
+          );
+        }
+      } catch (e) {
+        Logger.error('Error al descargar pokemon default, reintentando...', context: LogContext.pokemon, error: e);
+        await Future.delayed(const Duration(seconds: 2));
+        await _downloadPokemonComplete(pokemonUrl);
+      }
+    }
+    
+    // Descargar variantes regionales
+    for (final variant in regionalVariants) {
+      final pokemon = variant['pokemon'] as Map<String, dynamic>?;
+      final regionId = variant['regionId'] as int?;
+      if (pokemon == null || regionId == null) continue;
+      
+      final pokemonUrl = pokemon['url'] as String;
+      try {
+        await _downloadPokemonComplete(pokemonUrl);
+        
+        // Obtener pokemon de la DB para asignar pokedex
+        final pokemonApiId = _extractApiIdFromUrl(pokemonUrl);
+        final pokemonData = await (database.select(database.pokemon)
+          ..where((t) => t.apiId.equals(pokemonApiId)))
+          .getSingleOrNull();
+        
+        if (pokemonData != null) {
+          await _assignPokedexToPokemon(
+            speciesData: speciesData,
+            variantInfo: variantInfo,
+            isDefault: false,
+            regionId: regionId,
+          );
+          
+          // Guardar relación de variante con pokemon default
+          if (defaultPokemon != null) {
+            final defaultPokemonApiId = _extractApiIdFromUrl(defaultPokemon['url'] as String);
+            final defaultPokemonData = await (database.select(database.pokemon)
+              ..where((t) => t.apiId.equals(defaultPokemonApiId)))
+              .getSingleOrNull();
+            
+            if (defaultPokemonData != null) {
+              await database.pokemonVariantsDao.insertVariant(
+                pokemonId: defaultPokemonData.id,
+                variantPokemonId: pokemonData.id,
+              );
+            }
+          }
+        }
+      } catch (e) {
+        Logger.error('Error al descargar variante regional, reintentando...', context: LogContext.pokemon, error: e);
+        await Future.delayed(const Duration(seconds: 2));
+        await _downloadPokemonComplete(pokemonUrl);
+      }
+    }
+    
+    // Descargar variantes especiales (gmax, mega, primal)
+    for (final pokemon in specialVariants) {
+      final pokemonUrl = pokemon['url'] as String;
+      try {
+        await _downloadPokemonComplete(pokemonUrl);
+        
+        // Guardar relación de variante con pokemon default (sin asignar pokedex)
+        if (defaultPokemon != null) {
+          final pokemonApiId = _extractApiIdFromUrl(pokemonUrl);
+          final pokemonData = await (database.select(database.pokemon)
+            ..where((t) => t.apiId.equals(pokemonApiId)))
+            .getSingleOrNull();
+          
+          final defaultPokemonApiId = _extractApiIdFromUrl(defaultPokemon['url'] as String);
+          final defaultPokemonData = await (database.select(database.pokemon)
+            ..where((t) => t.apiId.equals(defaultPokemonApiId)))
+            .getSingleOrNull();
+          
+          if (pokemonData != null && defaultPokemonData != null) {
+            await database.pokemonVariantsDao.insertVariant(
+              pokemonId: defaultPokemonData.id,
+              variantPokemonId: pokemonData.id,
+            );
+          }
+        }
+      } catch (e) {
+        Logger.error('Error al descargar variante especial, reintentando...', context: LogContext.pokemon, error: e);
+        await Future.delayed(const Duration(seconds: 2));
+        await _downloadPokemonComplete(pokemonUrl);
       }
     }
   }
@@ -985,8 +1742,15 @@ class DownloadService {
   
   /// Descargar evolution chain
   Future<void> _downloadEvolutionChain(String chainUrl) async {
-    // Descargar datos desde la API
-    final chainData = await apiClient.getResourceByUrl(chainUrl);
+    // Descargar datos desde la API con reintento
+    Map<String, dynamic> chainData;
+    try {
+      chainData = await apiClient.getResourceByUrl(chainUrl);
+    } catch (e) {
+      Logger.error('Error al descargar evolution chain, reintentando...', context: LogContext.pokemon, error: e);
+      await Future.delayed(const Duration(seconds: 2));
+      chainData = await apiClient.getResourceByUrl(chainUrl);
+    }
     
     // Guardar en transacción
     await database.transaction(() async {
@@ -1006,8 +1770,18 @@ class DownloadService {
   
   /// Descargar pokemon completo con multimedia
   Future<void> _downloadPokemonComplete(String pokemonUrl) async {
-    // Descargar datos desde la API
-    final pokemonData = await apiClient.getResourceByUrl(pokemonUrl);
+    // Descargar datos desde la API con reintento
+    Map<String, dynamic> pokemonData;
+    try {
+      pokemonData = await apiClient.getResourceByUrl(pokemonUrl);
+    } catch (e) {
+      Logger.error('Error al descargar pokemon, reintentando...', context: LogContext.pokemon, error: e);
+      await Future.delayed(const Duration(seconds: 2));
+      pokemonData = await apiClient.getResourceByUrl(pokemonUrl);
+    }
+    
+    final pokemonName = pokemonData['name'] as String? ?? 'Pokemon';
+    Logger.pokemon('Descargando pokemon', pokemonName: pokemonName);
     
     // Guardar pokemon con URLs de multimedia en transacción
     await database.transaction(() async {
@@ -1036,7 +1810,7 @@ class DownloadService {
             .getSingleOrNull();
           speciesId = speciesData?.id;
         } catch (e) {
-          print('Error al extraer speciesId de URL $speciesUrl: $e');
+          Logger.error('Error al extraer speciesId de URL', context: LogContext.pokemon, error: e);
           // Continuar sin speciesId (se usará 0 como fallback)
         }
       }
@@ -1138,8 +1912,7 @@ class DownloadService {
         );
         updates['spriteFrontDefaultPath'] = path;
       } catch (e) {
-        print('Error al descargar sprite front default: $e');
-        // No actualizar path, pero mantener URL para reintentar después
+        // Error silencioso - multimedia puede fallar sin afectar funcionalidad
       }
     }
     
@@ -1151,7 +1924,7 @@ class DownloadService {
         );
         updates['spriteFrontShinyPath'] = path;
       } catch (e) {
-        print('Error al descargar sprite front shiny: $e');
+        // Error silencioso
       }
     }
     
@@ -1163,7 +1936,7 @@ class DownloadService {
         );
         updates['spriteBackDefaultPath'] = path;
       } catch (e) {
-        print('Error al descargar sprite back default: $e');
+        // Error silencioso
       }
     }
     
@@ -1175,7 +1948,7 @@ class DownloadService {
         );
         updates['spriteBackShinyPath'] = path;
       } catch (e) {
-        print('Error al descargar sprite back shiny: $e');
+        // Error silencioso
       }
     }
     
@@ -1188,7 +1961,7 @@ class DownloadService {
         );
         updates['artworkOfficialPath'] = path;
       } catch (e) {
-        print('Error al descargar artwork oficial: $e');
+        // Error silencioso
       }
     }
     
@@ -1200,7 +1973,7 @@ class DownloadService {
         );
         updates['artworkOfficialShinyPath'] = path;
       } catch (e) {
-        print('Error al descargar artwork oficial shiny: $e');
+        // Error silencioso
       }
     }
     
@@ -1213,7 +1986,7 @@ class DownloadService {
         );
         updates['cryLatestPath'] = path;
       } catch (e) {
-        print('Error al descargar cry latest: $e');
+        // Error silencioso
       }
     }
     
@@ -1225,7 +1998,7 @@ class DownloadService {
         );
         updates['cryLegacyPath'] = path;
       } catch (e) {
-        print('Error al descargar cry legacy: $e');
+        // Error silencioso
       }
     }
     
@@ -1257,7 +2030,7 @@ class DownloadService {
       // Por ahora, retornar null (se implementará con path_provider y storage)
       return null;
     } catch (e) {
-      print('Error al descargar archivo multimedia $url: $e');
+      // Error silencioso - multimedia puede fallar sin afectar funcionalidad
       return null;
     }
   }
@@ -1269,6 +2042,321 @@ class DownloadService {
       return jsonEncode(data);
     } catch (e) {
       return null;
+    }
+  }
+  
+  /// Asegurar que existe la región Nacional y su pokedex
+  /// La región Nacional es especial: no tiene apiId de la API, se crea manualmente
+  Future<void> _ensureNationalRegionExists() async {
+    final regionDao = RegionDao(database);
+    final pokedexDao = PokedexDao(database);
+    
+    // Verificar si existe la región Nacional
+    var nationalRegion = await regionDao.getRegionByName('Nacional');
+    
+    if (nationalRegion == null) {
+      // Crear región Nacional (apiId especial: 9999)
+      final regionCompanion = RegionsCompanion.insert(
+        apiId: 9999, // ID especial para región Nacional
+        name: 'Nacional',
+        mainGenerationId: const Value.absent(),
+        locationsJson: const Value.absent(),
+        pokedexesJson: const Value.absent(),
+        versionGroupsJson: const Value.absent(),
+      );
+      
+      final regionId = await database.into(database.regions).insert(regionCompanion);
+      nationalRegion = await regionDao.getRegionById(regionId);
+      Logger.region('Región Nacional creada', regionName: 'Nacional');
+    }
+    
+    if (nationalRegion == null) return;
+    
+    // Verificar si existe la pokedex Nacional (name == "national")
+    final nationalPokedex = await (database.select(database.pokedex)
+      ..where((t) => t.name.equals('national')))
+      .getSingleOrNull();
+    
+    if (nationalPokedex == null) {
+      // Descargar datos de la pokedex nacional desde la API
+      try {
+        final pokedexData = await apiClient.getResourceByUrl(
+          '${ApiClient.baseUrl}/pokedex/1', // La pokedex nacional tiene ID 1
+        );
+        
+        final apiId = pokedexData['id'] as int;
+        final name = pokedexData['name'] as String;
+        final isMainSeries = pokedexData['is_main_series'] as bool? ?? false;
+        
+        // Generar color para la pokedex nacional
+        final color = ColorGenerator.generatePastelColor(0);
+        
+        final pokedexCompanion = PokedexCompanion.insert(
+          apiId: apiId,
+          name: name,
+          isMainSeries: Value(isMainSeries),
+          regionId: Value(nationalRegion.id),
+          color: Value(color),
+          descriptionsJson: Value(_jsonEncode(pokedexData['descriptions'])),
+          pokemonEntriesJson: Value(_jsonEncode(pokedexData['pokemon_entries'])),
+        );
+        
+        await database.into(database.pokedex).insert(
+          pokedexCompanion,
+          mode: InsertMode.replace,
+        );
+        
+        Logger.pokedex('Pokedex Nacional creada', pokedexName: 'national');
+      } catch (e) {
+        Logger.error('Error al crear pokedex Nacional', context: LogContext.pokedex, error: e);
+      }
+    }
+  }
+  
+  /// Extraer región del nombre de un pokemon
+  /// Busca nombres de regiones en el nombre del pokemon (case-insensitive)
+  /// Retorna la región encontrada o null
+  Future<int?> _extractRegionFromPokemonName(String pokemonName) async {
+    final regionDao = RegionDao(database);
+    final allRegions = await regionDao.getAllRegions();
+    
+    // Buscar nombres de región en el nombre del pokemon
+    final pokemonNameLower = pokemonName.toLowerCase();
+    
+    for (final region in allRegions) {
+      final regionNameLower = region.name.toLowerCase();
+      
+      // Buscar coincidencias exactas o con guión (ej: "ponyta-galar" contiene "galar")
+      if (pokemonNameLower.contains(regionNameLower)) {
+        return region.id;
+      }
+    }
+    
+    return null;
+  }
+  
+  /// Verificar si un pokemon es una variante especial (gmax, mega, primal)
+  bool _isSpecialVariant(String pokemonName) {
+    final nameLower = pokemonName.toLowerCase();
+    return nameLower.contains('gmax') || 
+           nameLower.contains('mega') || 
+           nameLower.contains('primal');
+  }
+  
+  /// Procesar variantes de una pokemon-species y clasificarlas
+  /// Retorna un mapa con:
+  /// - 'default': pokemon default (si existe)
+  /// - 'regional': lista de variantes regionales con su región
+  /// - 'special': lista de variantes especiales (gmax, mega, primal)
+  Future<Map<String, dynamic>> _processPokemonVariants(
+    Map<String, dynamic> speciesData,
+  ) async {
+    final varieties = speciesData['varieties'] as List? ?? [];
+    final pokedexNumbers = speciesData['pokedex_numbers'] as List? ?? [];
+    
+    // Obtener todas las pokedex donde aparece esta especie
+    final speciesPokedexNames = <String>{};
+    for (final entry in pokedexNumbers) {
+      final pokedex = entry['pokedex'] as Map<String, dynamic>?;
+      if (pokedex != null) {
+        final pokedexName = pokedex['name'] as String?;
+        if (pokedexName != null) {
+          speciesPokedexNames.add(pokedexName);
+        }
+      }
+    }
+    
+    // Identificar pokemon default
+    Map<String, dynamic>? defaultPokemon;
+    final List<Map<String, dynamic>> regionalVariants = [];
+    final List<Map<String, dynamic>> specialVariants = [];
+    
+    for (final variety in varieties) {
+      final isDefault = variety['is_default'] as bool? ?? false;
+      final pokemon = variety['pokemon'] as Map<String, dynamic>?;
+      if (pokemon == null) continue;
+      
+      final pokemonName = pokemon['name'] as String;
+      
+      if (isDefault) {
+        defaultPokemon = pokemon;
+      } else {
+        // Verificar si es variante especial
+        if (_isSpecialVariant(pokemonName)) {
+          specialVariants.add(pokemon);
+        } else {
+          // Verificar si es variante regional
+          final regionId = await _extractRegionFromPokemonName(pokemonName);
+          if (regionId != null) {
+            regionalVariants.add({
+              'pokemon': pokemon,
+              'regionId': regionId,
+            });
+          } else {
+            // Si no es regional ni especial, tratarlo como variante especial
+            specialVariants.add(pokemon);
+          }
+        }
+      }
+    }
+    
+    return {
+      'default': defaultPokemon,
+      'regional': regionalVariants,
+      'special': specialVariants,
+      'speciesPokedexNames': speciesPokedexNames,
+    };
+  }
+  
+  /// Obtener entry_number de la pokedex nacional para una especie
+  int? _getNationalEntryNumber(Map<String, dynamic> speciesData) {
+    final pokedexNumbers = speciesData['pokedex_numbers'] as List? ?? [];
+    for (final entry in pokedexNumbers) {
+      final pokedex = entry['pokedex'] as Map<String, dynamic>?;
+      if (pokedex != null && pokedex['name'] == 'national') {
+        return _safeIntFromDynamic(entry['entry_number']);
+      }
+    }
+    return null;
+  }
+  
+  /// Asignar pokedex a un pokemon-species según las reglas
+  /// - Pokemon default: todas las pokedex de la especie (excepto las de variantes regionales) + nacional
+  /// - Variantes regionales: solo pokedex de esa región + nacional
+  /// - Variantes especiales: sin pokedex asignada
+  /// Nota: Las entradas de pokedex se relacionan con pokemon-species, no con pokemon individuales
+  Future<void> _assignPokedexToPokemon({
+    required Map<String, dynamic> speciesData,
+    required Map<String, dynamic> variantInfo,
+    required bool isDefault,
+    int? regionId, // Solo para variantes regionales
+  }) async {
+    final pokedexDao = PokedexDao(database);
+    final pokedexNumbers = speciesData['pokedex_numbers'] as List? ?? [];
+    
+    // Obtener entry_number para la pokedex nacional
+    int? nationalEntryNumber;
+    for (final entry in pokedexNumbers) {
+      final pokedex = entry['pokedex'] as Map<String, dynamic>?;
+      if (pokedex != null && pokedex['name'] == 'national') {
+        nationalEntryNumber = entry['entry_number'] as int?;
+        break;
+      }
+    }
+    
+    // Obtener pokemon-species de la DB
+    final speciesApiId = speciesData['id'] as int;
+    final species = await (database.select(database.pokemonSpecies)
+      ..where((t) => t.apiId.equals(speciesApiId)))
+      .getSingleOrNull();
+    
+    if (species == null) return;
+    
+    // Lista de pokedex a asignar
+    final List<Map<String, int>> pokedexToAssign = [];
+    
+    if (isDefault) {
+      // Pokemon default: todas las pokedex donde aparece la especie (excepto las de variantes regionales)
+      final speciesPokedexNames = variantInfo['speciesPokedexNames'] as Set<String>? ?? {};
+      final regionalVariants = variantInfo['regional'] as List? ?? [];
+      
+      // Obtener nombres de pokedex de variantes regionales para excluirlas
+      final regionalPokedexNames = <String>{};
+      for (final variant in regionalVariants) {
+        final variantRegionId = variant['regionId'] as int?;
+        if (variantRegionId != null) {
+          final regionPokedexes = await pokedexDao.getPokedexByRegion(variantRegionId);
+          for (final pokedex in regionPokedexes) {
+            regionalPokedexNames.add(pokedex.name);
+          }
+        }
+      }
+      
+      // Asignar a todas las pokedex de la especie excepto las regionales
+      for (final entry in pokedexNumbers) {
+        final pokedex = entry['pokedex'] as Map<String, dynamic>?;
+        if (pokedex == null) continue;
+        
+        final pokedexName = pokedex['name'] as String;
+        final entryNumber = entry['entry_number'] as int?;
+        
+        // Excluir pokedex de variantes regionales
+        if (!regionalPokedexNames.contains(pokedexName) && pokedexName != 'national') {
+          final pokedexData = await pokedexDao.getPokedexByApiId(
+            _extractApiIdFromUrl(pokedex['url'] as String? ?? ''),
+          );
+          if (pokedexData != null && entryNumber != null) {
+            pokedexToAssign.add({
+              'pokedexId': pokedexData.id,
+              'entryNumber': entryNumber,
+            });
+          }
+        }
+      }
+      
+      // Añadir pokedex nacional
+      if (nationalEntryNumber != null) {
+        final nationalPokedex = await (database.select(database.pokedex)
+          ..where((t) => t.name.equals('national')))
+          .getSingleOrNull();
+        if (nationalPokedex != null) {
+          pokedexToAssign.add({
+            'pokedexId': nationalPokedex.id,
+            'entryNumber': nationalEntryNumber,
+          });
+        }
+      }
+    } else if (regionId != null) {
+      // Variante regional: solo pokedex de esa región + nacional
+      final regionPokedexes = await pokedexDao.getPokedexByRegion(regionId);
+      
+      // Obtener entry_number para las pokedex de la región
+      for (final entry in pokedexNumbers) {
+        final pokedex = entry['pokedex'] as Map<String, dynamic>?;
+        if (pokedex == null) continue;
+        
+        final pokedexName = pokedex['name'] as String;
+        final entryNumber = entry['entry_number'] as int?;
+        
+        // Buscar si esta pokedex pertenece a la región
+        for (final regionPokedex in regionPokedexes) {
+          if (regionPokedex.name == pokedexName && entryNumber != null) {
+            pokedexToAssign.add({
+              'pokedexId': regionPokedex.id,
+              'entryNumber': entryNumber,
+            });
+            break;
+          }
+        }
+      }
+      
+      // Añadir pokedex nacional
+      if (nationalEntryNumber != null) {
+        final nationalPokedex = await (database.select(database.pokedex)
+          ..where((t) => t.name.equals('national')))
+          .getSingleOrNull();
+        if (nationalPokedex != null) {
+          pokedexToAssign.add({
+            'pokedexId': nationalPokedex.id,
+            'entryNumber': nationalEntryNumber,
+          });
+        }
+      }
+    }
+    // Variantes especiales: no se asignan pokedex
+    
+    // Guardar entradas de pokedex
+    for (final entry in pokedexToAssign) {
+      final companion = PokedexEntriesCompanion.insert(
+        pokedexId: entry['pokedexId']!,
+        pokemonSpeciesId: species.id,
+        entryNumber: entry['entryNumber']!,
+      );
+      
+      await database.into(database.pokedexEntries).insert(
+        companion,
+        mode: InsertMode.replace,
+      );
     }
   }
   

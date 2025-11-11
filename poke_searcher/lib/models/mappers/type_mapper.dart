@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:drift/drift.dart';
 import '../../database/app_database.dart';
-import '../api/api_named_resource.dart';
+import '../../utils/type_colors.dart';
 
 /// Mapper para convertir datos de API a entidades de base de datos (Types)
 class TypeMapper {
@@ -23,11 +23,15 @@ class TypeMapper {
       moveDamageClassId = _extractIdFromUrl(damageClassUrl);
     }
     
+    // Obtener color del tipo
+    final color = TypeColors.getColorForType(name);
+    
     return TypesCompanion.insert(
       apiId: id,
       name: name,
       generationId: Value(generationId),
       moveDamageClassId: Value(moveDamageClassId),
+      color: Value(color),
       damageRelationsJson: Value(jsonEncode(json['damage_relations'])),
     );
   }

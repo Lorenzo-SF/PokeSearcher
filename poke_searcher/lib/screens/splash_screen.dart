@@ -30,7 +30,6 @@ class _SplashScreenState extends State<SplashScreen>
   String _statusText = 'Inicializando...';
   bool _isDownloading = false;
   bool _downloadComplete = false;
-  int _totalSizeBytes = 0;
 
   @override
   void initState() {
@@ -137,7 +136,6 @@ class _SplashScreenState extends State<SplashScreen>
               _progress = progress.total > 0 
                   ? progress.completed / progress.total 
                   : 0.0;
-              _totalSizeBytes = progress.totalSizeBytes ?? 0;
               // Mostrar mensaje más descriptivo si hay rate limiting
               if (progress.currentEntity.contains('rate limit')) {
                 _statusText = 'Esperando... (demasiadas peticiones)';
@@ -166,14 +164,6 @@ class _SplashScreenState extends State<SplashScreen>
     }
   }
 
-  /// Formatear tamaño en formato legible
-  String _formatSize(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) {
-      return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    }
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
-  }
 
   @override
   void dispose() {
@@ -291,18 +281,6 @@ class _SplashScreenState extends State<SplashScreen>
                           ),
                         ),
                       ),
-                      // Tamaño total a descargar
-                      if (_totalSizeBytes > 0)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                            'Tamaño total: ${_formatSize(_totalSizeBytes)}',
-                            style: TextStyle(
-                              color: Colors.grey[500],
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
                     ],
                   ],
                 ),

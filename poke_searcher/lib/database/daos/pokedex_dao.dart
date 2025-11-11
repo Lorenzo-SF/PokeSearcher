@@ -3,11 +3,13 @@ import '../app_database.dart';
 import '../tables/pokedex.dart';
 import '../tables/pokedex_entries.dart';
 import '../tables/pokemon_species.dart';
+import '../tables/regions.dart';
+import '../../utils/starter_pokemon.dart';
 
 part 'pokedex_dao.g.dart';
 
 /// Data Access Object para operaciones con Pokedex
-@DriftAccessor(tables: [Pokedex, PokedexEntries, PokemonSpecies])
+@DriftAccessor(tables: [Pokedex, PokedexEntries, PokemonSpecies, Regions])
 class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
   PokedexDao(AppDatabase db) : super(db);
   
@@ -58,32 +60,37 @@ class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
       .get();
   }
   
-  /// Obtener los 3 Pokémon iniciales de una región (primeros 3 del pokedex principal)
+  /// Obtener los 3 Pokémon iniciales de una región usando la lista fija
+  /// Si la región no tiene iniciales definidos o no se encuentran en la DB, retorna lista vacía
   Future<List<PokemonSpecy>> getStarterPokemon(int regionId) async {
-    // Obtener el pokedex principal de la región
-    final pokedexList = await getPokedexByRegion(regionId);
-    if (pokedexList.isEmpty) {
+    // Obtener el nombre de la región
+    final region = await (select(regions)
+      ..where((t) => t.id.equals(regionId)))
+      .getSingleOrNull();
+    
+    if (region == null) {
       return [];
     }
     
-    // Tomar el primer pokedex (asumiendo que es el principal)
-    final mainPokedex = pokedexList.first;
-    
-    // Obtener las primeras 3 entradas
-    final entries = await (select(pokedexEntries)
-      ..where((t) => t.pokedexId.equals(mainPokedex.id))
-      ..orderBy([(t) => OrderingTerm(expression: t.entryNumber)])
-      ..limit(3))
-      .get();
-    
-    if (entries.isEmpty) {
+    // Obtener los nombres de los iniciales para esta región
+    final starterNames = StarterPokemon.getStartersForRegion(region.name);
+    if (starterNames.isEmpty) {
       return [];
     }
     
-    final speciesIds = entries.map((e) => e.pokemonSpeciesId).toList();
-    return await (select(pokemonSpecies)
-      ..where((t) => t.id.isIn(speciesIds)))
-      .get();
+    // Buscar las especies por nombre
+    final List<PokemonSpecy> starters = [];
+    for (final starterName in starterNames) {
+      final species = await (select(pokemonSpecies)
+        ..where((t) => t.name.equals(starterName)))
+        .getSingleOrNull();
+      
+      if (species != null) {
+        starters.add(species);
+      }
+    }
+    
+    return starters;
   }
   
   /// Obtener todos los pokemons únicos de una región con sus números de pokedex
@@ -138,6 +145,12 @@ class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
     }
     
     return result;
+  }
+  
+  /// Obtener el conteo de pokemons únicos de una región
+  Future<int> getUniquePokemonCountByRegion(int regionId) async {
+    final uniquePokemon = await getUniquePokemonByRegion(regionId);
+    return uniquePokemon.length;
   }
 }
 

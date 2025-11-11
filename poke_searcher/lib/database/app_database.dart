@@ -35,6 +35,7 @@ import 'tables/pokemon_habitats.dart';
 import 'tables/move_damage_classes.dart';
 import 'tables/item_categories.dart';
 import 'tables/item_pockets.dart';
+import 'tables/pokemon_variants.dart';
 // Vista temporalmente deshabilitada hasta implementar correctamente
 // import 'views/region_summary_view.dart';
 import 'daos/region_dao.dart';
@@ -45,6 +46,7 @@ import 'daos/move_dao.dart';
 import 'daos/ability_dao.dart';
 import 'daos/item_dao.dart';
 import 'daos/language_dao.dart';
+import 'daos/pokemon_variants_dao.dart';
 
 part 'app_database.g.dart';
 
@@ -79,6 +81,7 @@ part 'app_database.g.dart';
   MoveDamageClasses,
   ItemCategories,
   ItemPockets,
+  PokemonVariants,
   ],
   // views: [
   //   RegionSummaryView,  // Temporalmente deshabilitada
@@ -145,6 +148,10 @@ class AppDatabase extends _$AppDatabase {
     // Índices para relaciones de daño
     await customStatement('CREATE INDEX IF NOT EXISTS idx_type_damage_attacking ON type_damage_relations(attacking_type_id)');
     await customStatement('CREATE INDEX IF NOT EXISTS idx_type_damage_defending ON type_damage_relations(defending_type_id)');
+    
+    // Índices para variantes de pokemon
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_pokemon_variants_pokemon ON pokemon_variants(pokemon_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_pokemon_variants_variant ON pokemon_variants(variant_pokemon_id)');
   }
 
   // Getters para DAOs
@@ -156,6 +163,7 @@ class AppDatabase extends _$AppDatabase {
   AbilityDao get abilityDao => AbilityDao(this);
   ItemDao get itemDao => ItemDao(this);
   LanguageDao get languageDao => LanguageDao(this);
+  PokemonVariantsDao get pokemonVariantsDao => PokemonVariantsDao(this);
 }
 
 LazyDatabase _openConnection() {
