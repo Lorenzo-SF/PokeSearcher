@@ -16,11 +16,22 @@ class PokemonVariantsDao extends DatabaseAccessor<AppDatabase> with _$PokemonVar
       .get();
   }
   
+  /// Alias para compatibilidad
+  Future<List<PokemonVariant>> getVariantsForPokemon(int pokemonId) async {
+    return getVariants(pokemonId);
+  }
+  
   /// Obtener el pokemon default de una variante
   Future<PokemonVariant?> getDefaultPokemon(int variantPokemonId) async {
     return await (select(pokemonVariants)
       ..where((t) => t.variantPokemonId.equals(variantPokemonId)))
       .getSingleOrNull();
+  }
+  
+  /// Obtener el ID del pokemon default de una variante
+  Future<int?> getDefaultPokemonId(int variantPokemonId) async {
+    final variant = await getDefaultPokemon(variantPokemonId);
+    return variant?.pokemonId;
   }
   
   /// Insertar relación de variante

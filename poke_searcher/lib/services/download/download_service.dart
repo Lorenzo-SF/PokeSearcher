@@ -1732,6 +1732,7 @@ class DownloadService {
       flavorTextEntriesJson: Value(_jsonEncode(data['flavor_text_entries'])),
       formDescriptionsJson: Value(_jsonEncode(data['form_descriptions'])),
       varietiesJson: Value(_jsonEncode(data['varieties'])),
+      generaJson: Value(_jsonEncode(data['genera'])),
     );
     
     await database.into(database.pokemonSpecies).insert(
@@ -1792,6 +1793,37 @@ class DownloadService {
     await _downloadPokemonMedia(pokemonData);
   }
   
+  /// Seleccionar el PNG de mayor resolución de una lista de URLs
+  /// Prioriza: official-artwork > home > otros
+  String _selectHighestResolutionPng(List<String> urls) {
+    if (urls.isEmpty) throw ArgumentError('Lista de URLs vacía');
+    if (urls.length == 1) return urls.first;
+    
+    // Prioridad por fuente
+    String? officialArtwork;
+    String? home;
+    String? other;
+    
+    for (final url in urls) {
+      final lowerUrl = url.toLowerCase();
+      if (lowerUrl.contains('official-artwork')) {
+        officialArtwork = url;
+      } else if (lowerUrl.contains('home')) {
+        home = url;
+      } else {
+        other = url;
+      }
+    }
+    
+    // Retornar según prioridad
+    if (officialArtwork != null) return officialArtwork;
+    if (home != null) return home;
+    if (other != null) return other;
+    
+    // Si no hay ninguna categorizada, retornar la primera
+    return urls.first;
+  }
+
   /// Guardar pokemon con URLs de multimedia
   Future<void> _savePokemonWithMedia(Map<String, dynamic> data) async {
     final apiId = data['id'] as int;
@@ -1831,15 +1863,40 @@ class DownloadService {
     }
     
     // Extraer URLs de artwork oficial
+    // Para normal: SVG de dream-world, o si no hay, PNG de official-artwork/front_default
+    // Para shiny: siempre PNG de official-artwork/front_shiny
     String? artworkOfficialUrl;
     String? artworkOfficialShinyUrl;
     if (sprites != null) {
       final other = sprites['other'] as Map<String, dynamic>?;
       if (other != null) {
+        // Buscar SVG para imagen normal (prioridad: dream-world)
+        final dreamWorld = other['dream-world'] as Map<String, dynamic>?;
+        if (dreamWorld != null) {
+          final frontDefault = dreamWorld['front_default'] as String?;
+          if (frontDefault != null && frontDefault.toLowerCase().endsWith('.svg')) {
+            artworkOfficialUrl = frontDefault;
+          }
+        }
+        
+        // Si no hay dream-world SVG, usar PNG de official-artwork/front_default
+        if (artworkOfficialUrl == null) {
+          final officialArtwork = other['official-artwork'] as Map<String, dynamic>?;
+          if (officialArtwork != null) {
+            final frontDefault = officialArtwork['front_default'] as String?;
+            if (frontDefault != null) {
+              artworkOfficialUrl = frontDefault;
+            }
+          }
+        }
+        
+        // Para shiny: siempre usar official-artwork/front_shiny
         final officialArtwork = other['official-artwork'] as Map<String, dynamic>?;
         if (officialArtwork != null) {
-          artworkOfficialUrl = officialArtwork['front_default'] as String?;
-          artworkOfficialShinyUrl = officialArtwork['front_shiny'] as String?;
+          final frontShiny = officialArtwork['front_shiny'] as String?;
+          if (frontShiny != null) {
+            artworkOfficialShinyUrl = frontShiny;
+          }
         }
       }
     }
@@ -1887,6 +1944,57 @@ class DownloadService {
       companion,
       mode: InsertMode.replace,
     );
+    
+    // Guardar relaciones de tipos
+    await _savePokemonTypes(data);
+  }
+  
+  /// Guardar relaciones de tipos del pokemon
+  Future<void> _savePokemonTypes(Map<String, dynamic> data) async {
+    final types = data['types'] as List?;
+    if (types == null || types.isEmpty) return;
+    
+    // Obtener el pokemon de la DB para obtener su ID real
+    final apiId = data['id'] as int;
+    final pokemon = await (database.select(database.pokemon)
+      ..where((t) => t.apiId.equals(apiId)))
+      .getSingleOrNull();
+    
+    if (pokemon == null) return;
+    
+    // Eliminar tipos existentes de este pokemon
+    await (database.delete(database.pokemonTypes)
+      ..where((t) => t.pokemonId.equals(pokemon.id)))
+      .go();
+    
+    // Guardar nuevos tipos
+    for (final typeEntry in types) {
+      final typeData = typeEntry as Map<String, dynamic>;
+      final typeInfo = typeData['type'] as Map<String, dynamic>?;
+      final slot = typeData['slot'] as int?;
+      
+      if (typeInfo != null && slot != null) {
+        final typeUrl = typeInfo['url'] as String?;
+        if (typeUrl != null && typeUrl.isNotEmpty) {
+          final typeApiId = _extractApiIdFromUrl(typeUrl);
+          // Buscar el tipo en la DB
+          final type = await (database.select(database.types)
+            ..where((t) => t.apiId.equals(typeApiId)))
+            .getSingleOrNull();
+          
+          if (type != null) {
+            await database.into(database.pokemonTypes).insert(
+              PokemonTypesCompanion.insert(
+                pokemonId: pokemon.id,
+                typeId: type.id,
+                slot: slot,
+              ),
+              mode: InsertMode.replace,
+            );
+          }
+        }
+      }
+    }
   }
   
   /// Descargar multimedia de pokemon
@@ -1906,9 +2014,10 @@ class DownloadService {
     // Sprites
     if (pokemon.spriteFrontDefaultUrl != null) {
       try {
+        final extension = pokemon.spriteFrontDefaultUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
         final path = await _downloadMediaFile(
           pokemon.spriteFrontDefaultUrl!,
-          'pokemon/$apiId/sprite_front_default.png',
+          'pokemon/$apiId/sprite_front_default$extension',
         );
         updates['spriteFrontDefaultPath'] = path;
       } catch (e) {
@@ -1918,9 +2027,10 @@ class DownloadService {
     
     if (pokemon.spriteFrontShinyUrl != null) {
       try {
+        final extension = pokemon.spriteFrontShinyUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
         final path = await _downloadMediaFile(
           pokemon.spriteFrontShinyUrl!,
-          'pokemon/$apiId/sprite_front_shiny.png',
+          'pokemon/$apiId/sprite_front_shiny$extension',
         );
         updates['spriteFrontShinyPath'] = path;
       } catch (e) {
@@ -1930,9 +2040,10 @@ class DownloadService {
     
     if (pokemon.spriteBackDefaultUrl != null) {
       try {
+        final extension = pokemon.spriteBackDefaultUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
         final path = await _downloadMediaFile(
           pokemon.spriteBackDefaultUrl!,
-          'pokemon/$apiId/sprite_back_default.png',
+          'pokemon/$apiId/sprite_back_default$extension',
         );
         updates['spriteBackDefaultPath'] = path;
       } catch (e) {
@@ -1942,9 +2053,10 @@ class DownloadService {
     
     if (pokemon.spriteBackShinyUrl != null) {
       try {
+        final extension = pokemon.spriteBackShinyUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
         final path = await _downloadMediaFile(
           pokemon.spriteBackShinyUrl!,
-          'pokemon/$apiId/sprite_back_shiny.png',
+          'pokemon/$apiId/sprite_back_shiny$extension',
         );
         updates['spriteBackShinyPath'] = path;
       } catch (e) {
@@ -1955,9 +2067,10 @@ class DownloadService {
     // Artwork oficial
     if (pokemon.artworkOfficialUrl != null) {
       try {
+        final extension = pokemon.artworkOfficialUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
         final path = await _downloadMediaFile(
           pokemon.artworkOfficialUrl!,
-          'pokemon/$apiId/artwork_official.png',
+          'pokemon/$apiId/artwork_official$extension',
         );
         updates['artworkOfficialPath'] = path;
       } catch (e) {
@@ -1967,9 +2080,10 @@ class DownloadService {
     
     if (pokemon.artworkOfficialShinyUrl != null) {
       try {
+        final extension = pokemon.artworkOfficialShinyUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
         final path = await _downloadMediaFile(
           pokemon.artworkOfficialShinyUrl!,
-          'pokemon/$apiId/artwork_official_shiny.png',
+          'pokemon/$apiId/artwork_official_shiny$extension',
         );
         updates['artworkOfficialShinyPath'] = path;
       } catch (e) {

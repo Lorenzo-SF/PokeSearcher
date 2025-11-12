@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:drift/drift.dart';
 import '../app_database.dart';
 import '../tables/pokemon.dart';
@@ -59,8 +60,12 @@ class PokemonDao extends DatabaseAccessor<AppDatabase> with _$PokemonDaoMixin {
       return [];
     }
     
+    // Obtener los tipos usando los IDs de la tabla types (no apiId)
     final typeIds = pokemonTypeList.map((pt) => pt.typeId).toList();
-    return await (select(types)..where((t) => t.apiId.isIn(typeIds))).get();
+    
+    // Buscar los tipos por su ID (no apiId)
+    final allTypes = await select(types).get();
+    return allTypes.where((type) => typeIds.contains(type.id)).toList();
   }
   
   /// Obtener habilidades de un Pokémon
@@ -98,6 +103,46 @@ class PokemonDao extends DatabaseAccessor<AppDatabase> with _$PokemonDaoMixin {
     return await (select(pokemon)
       ..where((t) => t.name.like('%$query%')))
       .get();
+  }
+  
+  /// Obtener la especie de un Pokémon
+  Future<PokemonSpecy?> getSpeciesByPokemonId(int pokemonId) async {
+    final pokemonData = await getPokemonById(pokemonId);
+    if (pokemonData == null) return null;
+    
+    return await (select(pokemonSpecies)
+      ..where((t) => t.id.equals(pokemonData.speciesId)))
+      .getSingleOrNull();
+  }
+  
+  /// Obtener estadísticas de un Pokémon (desde statsJson)
+  /// Retorna un mapa: statName -> baseStat
+  Map<String, int> getPokemonStats(PokemonData pokemon) {
+    if (pokemon.statsJson == null || pokemon.statsJson!.isEmpty) {
+      return {};
+    }
+    
+    try {
+      final statsData = jsonDecode(pokemon.statsJson!) as List;
+      final Map<String, int> stats = {};
+      
+      for (final statEntry in statsData) {
+        final stat = statEntry as Map<String, dynamic>;
+        final statInfo = stat['stat'] as Map<String, dynamic>?;
+        final baseStat = stat['base_stat'] as int?;
+        
+        if (statInfo != null && baseStat != null) {
+          final statName = statInfo['name'] as String?;
+          if (statName != null) {
+            stats[statName] = baseStat;
+          }
+        }
+      }
+      
+      return stats;
+    } catch (e) {
+      return {};
+    }
   }
 }
 

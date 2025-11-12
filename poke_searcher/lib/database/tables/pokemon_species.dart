@@ -28,6 +28,7 @@ class PokemonSpecies extends Table {
   TextColumn get flavorTextEntriesJson => text().nullable()();
   TextColumn get formDescriptionsJson => text().nullable()();
   TextColumn get varietiesJson => text().nullable()();
+  TextColumn get generaJson => text().nullable()(); // Géneros (categorías) del pokemon
   
   @override
   Set<Column> get primaryKey => {id};

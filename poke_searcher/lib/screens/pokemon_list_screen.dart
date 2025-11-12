@@ -1,10 +1,12 @@
 import 'dart:math' as math;
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../database/app_database.dart';
 import '../services/config/app_config.dart';
 import '../database/daos/pokedex_dao.dart';
 import '../database/daos/pokemon_dao.dart';
 import '../utils/color_generator.dart';
+import 'pokemon_detail_screen.dart';
 
 class PokemonListScreen extends StatefulWidget {
   final AppDatabase database;
@@ -56,10 +58,17 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
         final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
         final pokemon = pokemons.isNotEmpty ? pokemons.first : null;
         
+        // Obtener tipos del pokemon
+        List<Type> types = [];
+        if (pokemon != null) {
+          types = await pokemonDao.getPokemonTypes(pokemon.id);
+        }
+        
         pokemonList.add({
           'species': species,
           'pokemon': pokemon,
           'pokedexNumbers': pokedexNumbers,
+          'types': types,
         });
       }
       
@@ -160,11 +169,14 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
     return sortedNumbers.join(' / ');
   }
 
-  /// Obtener colores de las pokedexes
-  List<Color> _getPokedexColors(List<Map<String, dynamic>> pokedexNumbers) {
-    return pokedexNumbers
-        .map((n) {
-          final colorHex = n['color'] as String?;
+  /// Obtener colores de los tipos del pokemon
+  List<Color> _getTypeColors(List<Type> types) {
+    if (types.isEmpty) {
+      return [const Color(0xFFCCCCCC)]; // Color por defecto
+    }
+    return types
+        .map((type) {
+          final colorHex = type.color;
           if (colorHex == null || colorHex.isEmpty) {
             return const Color(0xFFCCCCCC); // Color por defecto
           }
@@ -173,15 +185,47 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
         .toList();
   }
 
+  String _getRegionImageName(String regionName) {
+    return 'assets/${regionName.toLowerCase()}.png';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text('${widget.regionName} - Pokemons'),
-        centerTitle: true,
-        backgroundColor: const Color(0xFFDC143C),
-      ),
-      body: _isLoading
+      body: Stack(
+        children: [
+          // Fondo con imagen de la región y blur
+          Container(
+            width: double.infinity,
+            height: double.infinity,
+            decoration: BoxDecoration(
+              image: DecorationImage(
+                image: AssetImage(
+                  _getRegionImageName(widget.regionName),
+                ),
+                fit: BoxFit.cover,
+                alignment: Alignment.center,
+                colorFilter: ColorFilter.mode(
+                  Colors.black.withOpacity(0.5),
+                  BlendMode.darken,
+                ),
+              ),
+            ),
+            child: ClipRect(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 5.0, sigmaY: 5.0),
+                child: Container(
+                  color: Colors.black.withOpacity(0.2),
+                ),
+              ),
+            ),
+          ),
+          // Contenido
+          Padding(
+            padding: EdgeInsets.only(
+              top: MediaQuery.of(context).padding.top + 56,
+            ),
+            child: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _pokemonList.isEmpty
               ? Center(
@@ -215,16 +259,59 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                     final species = item['species'] as PokemonSpecy;
                     final pokemon = item['pokemon'] as PokemonData?;
                     final pokedexNumbers = item['pokedexNumbers'] as List<Map<String, dynamic>>;
-                    final colors = _getPokedexColors(pokedexNumbers);
+                    final types = item['types'] as List<Type>;
+                    final colors = _getTypeColors(types);
                     
-                    return _buildPokemonCard(
-                      species: species,
-                      pokemon: pokemon,
-                      pokedexNumbers: pokedexNumbers,
-                      colors: colors,
+                    return GestureDetector(
+                      onTap: pokemon != null ? () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (context) => PokemonDetailScreen(
+                              database: widget.database,
+                              appConfig: widget.appConfig,
+                              pokemonId: pokemon.id,
+                              regionId: widget.regionId,
+                              regionName: widget.regionName,
+                            ),
+                          ),
+                        );
+                      } : null,
+                      child: _buildPokemonCard(
+                        species: species,
+                        pokemon: pokemon,
+                        pokedexNumbers: pokedexNumbers,
+                        colors: colors,
+                      ),
                     );
                   },
                 ),
+          ),
+          // Botón de volver
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 8,
+            left: 8,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => Navigator.of(context).pop(),
+                borderRadius: BorderRadius.circular(24),
+                child: Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.3),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.arrow_back,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -236,7 +323,7 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
   }) {
     final imageUrl = _getBestImageUrl(pokemon);
     final numbersText = _formatPokedexNumbers(pokedexNumbers);
-    final hasMultiplePokedexes = colors.length > 1;
+    final hasMultipleTypes = colors.length > 1;
     
     return Container(
       decoration: BoxDecoration(
@@ -253,17 +340,13 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
         borderRadius: BorderRadius.circular(12),
         child: Stack(
           children: [
-            // Fondo con color(es) de pokedex (translúcido)
-            if (hasMultiplePokedexes)
-              // Múltiples pokedexes: franjas diagonales (45 grados)
+            // Fondo con color(es) de tipos (franjas ocupando mitad de la tarjeta)
+            if (hasMultipleTypes)
+              // Múltiples tipos: franjas diagonales (45 grados) ocupando mitad
               _buildDiagonalLinesBackground(colors)
             else
-              // Una sola pokedex: color sólido translúcido
-              Container(
-                color: colors.first.withOpacity(0.8),
-                width: double.infinity,
-                height: double.infinity,
-              ),
+              // Un solo tipo: franja diagonal ocupando mitad
+              _buildDiagonalLinesBackground(colors),
             // Contenido
             Container(
               padding: const EdgeInsets.all(8),
@@ -385,37 +468,51 @@ class _DiagonalLinesPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (colors.isEmpty) return;
     
-    // Calcular el ancho de cada franja
-    final stripeWidth = size.width / colors.length;
+    // Las franjas ocupan el triángulo superior (de esquina superior izquierda a esquina inferior derecha)
+    // Dividir la diagonal en partes iguales según el número de tipos
+    final startRatio = 0.0;
+    final endRatio = 0.5; // Ocupar solo la mitad (triángulo superior)
     
-    // Calcular la distancia diagonal necesaria para cubrir toda la altura
-    final diagonalDistance = size.height / math.cos(angle);
-    
-    // Dibujar cada franja diagonal
+    // Dibujar cada franja diagonal formando el triángulo superior
     for (int i = 0; i < colors.length; i++) {
       final paint = Paint()
         ..color = colors[i].withOpacity(0.8)
         ..style = PaintingStyle.fill;
       
-      // Calcular los puntos de la franja diagonal
-      // La franja va de esquina superior izquierda a inferior derecha
-      final startX = i * stripeWidth;
-      final endX = (i + 1) * stripeWidth;
+      // Calcular los puntos del triángulo
+      // Dividir la mitad de la diagonal en partes iguales
+      final stripeStartRatio = startRatio + (i / colors.length) * (endRatio - startRatio);
+      final stripeEndRatio = startRatio + ((i + 1) / colors.length) * (endRatio - startRatio);
       
-      // Crear path para la franja diagonal
+      // Puntos de inicio y fin en la diagonal (de esquina superior izquierda a mitad de la diagonal)
+      final startX = stripeStartRatio * size.width;
+      final startY = stripeStartRatio * size.height;
+      final endX = stripeEndRatio * size.width;
+      final endY = stripeEndRatio * size.height;
+      
+      // Crear path para el triángulo
       final path = Path();
       
-      // Punto superior izquierdo de la franja
-      path.moveTo(startX, 0);
+      // Punto superior izquierdo (esquina superior izquierda de la tarjeta)
+      if (i == 0) {
+        path.moveTo(0, 0);
+      } else {
+        path.moveTo(startX, startY);
+      }
       
-      // Punto superior derecho de la franja
-      path.lineTo(endX, 0);
+      // Punto en la diagonal (inicio de esta franja)
+      path.lineTo(startX, startY);
       
-      // Punto inferior derecho de la franja (desplazado por el ángulo)
-      path.lineTo(endX + diagonalDistance * math.sin(angle), size.height);
+      // Punto en la diagonal (fin de esta franja)
+      path.lineTo(endX, endY);
       
-      // Punto inferior izquierdo de la franja (desplazado por el ángulo)
-      path.lineTo(startX + diagonalDistance * math.sin(angle), size.height);
+      // Punto superior derecho (si es la última franja, va hasta la mitad del borde superior)
+      if (i == colors.length - 1) {
+        path.lineTo(size.width / 2, 0);
+      } else {
+        // Para franjas intermedias, el borde superior es la línea desde startX hasta endX en y=0
+        path.lineTo(endX, 0);
+      }
       
       // Cerrar el path
       path.close();

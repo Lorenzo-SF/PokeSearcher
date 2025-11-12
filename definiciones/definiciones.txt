@@ -60,3 +60,23 @@ Tendrá las siguientes secciones, las cuales cada una navegará a su respectiva 
         · Configuracion
 
 En la configuracion, se podra elegir el tema (claro, oscuro o sistema), el idioma y se podrá forzar la descarga de informacion
+
+
+Quiero lo siguiente:
+
+
+En la parte superior, el nombre del pokemon y el numero
+despues, en la parte izquierda, de tamaño generoso (porque debe tener la misma altura que todoe el contenido que se ponga en el lado derecho) el sprite del pokemon (la imagen svg de las descargadas)
+a la derecha los dos tipos (en la misma linea) que sera una "capsula" con el fondo del color del tipo y la letra blanca
+debajo del tipo, la cateagoria (el texto "genus" del pokemon. Si hay varios, el mas reciente) altura, peso, habilidad y descripcion
+todos esos datos deben ocupar, de altura, lo mismo que la imagen, asique la imagen debe ser lo suficientemente grande
+debajo, visualizado en formato "barras" (como el tipico "ecualizador" de una minicadena) pero de tamaño comedido debido al tamaño de la pantalla, mostrar las estadisticas:
+- ps
+- ataque
+- defensa
+- ataque especial
+- defensa especial
+- velocidad
+
+a continuacion, habrá que visualizar los movimientos del pokemon, el tipo de movimiento y otras estadisticas si hay.
+al final, mostrar en las mismas tarjetas que en el listado, dos listas horizontales, una con las evoluciones relacionadas con ese pokemon (si tiene, anteriores y posteriores) y tambien, las variantes registradasd de ese pokemon

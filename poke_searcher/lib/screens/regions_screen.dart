@@ -8,6 +8,7 @@ import '../database/daos/pokemon_dao.dart';
 import '../services/download/download_service.dart';
 import '../services/download/download_manager.dart';
 import 'pokemon_list_screen.dart';
+import 'configuration_screen.dart';
 import '../utils/logger.dart';
 
 class RegionsScreen extends StatefulWidget {
@@ -314,13 +315,12 @@ class _RegionsScreenState extends State<RegionsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('PokeSearch'),
-        centerTitle: true,
-        backgroundColor: const Color(0xFFDC143C),
-      ),
+      // Sin AppBar, pero mantenemos el drawer
       drawer: _buildDrawer(),
-      body: _isLoading
+      body: Stack(
+        children: [
+          // Contenido principal
+          _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _regions.isEmpty
               ? Center(
@@ -358,6 +358,8 @@ class _RegionsScreenState extends State<RegionsScreen> {
                       },
                       child: Container(
                         key: ValueKey(_currentPage),
+                        width: double.infinity,
+                        height: double.infinity,
                         decoration: BoxDecoration(
                           image: DecorationImage(
                             image: AssetImage(
@@ -366,6 +368,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
                               ),
                             ),
                             fit: BoxFit.cover,
+                            alignment: Alignment.center,
                             colorFilter: ColorFilter.mode(
                               Colors.black.withOpacity(0.5),
                               BlendMode.darken,
@@ -374,23 +377,47 @@ class _RegionsScreenState extends State<RegionsScreen> {
                         ),
                       ),
                     ),
-                    // Contenido
-                    Column(
-                      children: [
-                        Expanded(
-                          child: PageView.builder(
-                            controller: _pageController,
-                            onPageChanged: _onPageChanged,
-                            itemCount: _regions.length,
-                            itemBuilder: (context, index) {
-                              return _buildRegionCard(_regions[index], index);
-                            },
-                          ),
+                    // Contenido centrado y estirado
+                    Center(
+                      child: SizedBox(
+                        width: MediaQuery.of(context).size.width * 0.9,
+                        height: MediaQuery.of(context).size.height * 0.85,
+                        child: PageView.builder(
+                          controller: _pageController,
+                          onPageChanged: _onPageChanged,
+                          itemCount: _regions.length,
+                          itemBuilder: (context, index) {
+                            return _buildRegionCard(_regions[index], index);
+                          },
                         ),
-                      ],
+                      ),
                     ),
                   ],
                 ),
+          // Botón flotante para abrir el menú
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 8,
+            left: 8,
+            child: GestureDetector(
+              onTap: () {
+                Scaffold.of(context).openDrawer();
+              },
+              child: Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.3),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.menu,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -404,11 +431,11 @@ class _RegionsScreenState extends State<RegionsScreen> {
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeInOut,
           margin: EdgeInsets.symmetric(
-            horizontal: isActive ? 16 : 32,
-            vertical: isActive ? 8 : 16,
+            horizontal: isActive ? 8 : 16,
+            vertical: isActive ? 4 : 8,
           ),
           transform: Matrix4.identity()
-            ..scale(isActive ? 1.05 : 1.0),
+            ..scale(isActive ? 1.0 : 0.9),
           child: Container(
             decoration: BoxDecoration(
               color: Colors.white.withOpacity(0.2),
@@ -425,7 +452,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
                 ),
               ],
             ),
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.all(16),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -433,7 +460,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
                 Text(
                   region.name,
                   style: const TextStyle(
-                    fontSize: 28,
+                    fontSize: 22,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
                     shadows: [
@@ -444,7 +471,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 16),
                 // 3 imágenes de pokemon iniciales
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -454,9 +481,9 @@ class _RegionsScreenState extends State<RegionsScreen> {
                     final imageUrl = _getBestImageUrl(pokemon);
                     
                     return Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 8),
-                      width: 60,
-                      height: 60,
+                      margin: const EdgeInsets.symmetric(horizontal: 6),
+                      width: 50,
+                      height: 50,
                       decoration: BoxDecoration(
                         color: Colors.white.withOpacity(0.3),
                         borderRadius: BorderRadius.circular(10),
@@ -499,7 +526,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
                     );
                   }),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 16),
                 // Contador de pokedex
                 Container(
                   padding: const EdgeInsets.symmetric(
@@ -638,7 +665,14 @@ class _RegionsScreenState extends State<RegionsScreen> {
             title: const Text('Configuración'),
             onTap: () {
               Navigator.pop(context);
-              // TODO: Navegar a configuración
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => ConfigurationScreen(
+                    database: widget.database,
+                    appConfig: widget.appConfig,
+                  ),
+                ),
+              );
             },
           ),
         ],
