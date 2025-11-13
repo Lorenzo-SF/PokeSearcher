@@ -7,7 +7,7 @@ part 'move_dao.g.dart';
 /// Data Access Object para operaciones con movimientos
 @DriftAccessor(tables: [Moves])
 class MoveDao extends DatabaseAccessor<AppDatabase> with _$MoveDaoMixin {
-  MoveDao(AppDatabase db) : super(db);
+  MoveDao(super.db);
   
   /// Obtener todos los movimientos
   Future<List<Move>> getAllMoves() async {

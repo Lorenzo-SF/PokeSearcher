@@ -7,7 +7,7 @@ part 'ability_dao.g.dart';
 /// Data Access Object para operaciones con habilidades
 @DriftAccessor(tables: [Abilities])
 class AbilityDao extends DatabaseAccessor<AppDatabase> with _$AbilityDaoMixin {
-  AbilityDao(AppDatabase db) : super(db);
+  AbilityDao(super.db);
   
   /// Obtener todas las habilidades
   Future<List<Ability>> getAllAbilities() async {

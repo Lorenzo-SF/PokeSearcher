@@ -24,7 +24,7 @@ part 'pokemon_dao.g.dart';
   Moves,
 ])
 class PokemonDao extends DatabaseAccessor<AppDatabase> with _$PokemonDaoMixin {
-  PokemonDao(AppDatabase db) : super(db);
+  PokemonDao(super.db);
   
   /// Obtener Pokémon por ID
   Future<PokemonData?> getPokemonById(int id) async {

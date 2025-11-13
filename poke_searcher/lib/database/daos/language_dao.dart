@@ -8,7 +8,7 @@ part 'language_dao.g.dart';
 /// Data Access Object para operaciones con idiomas
 @DriftAccessor(tables: [Languages, LocalizedNames])
 class LanguageDao extends DatabaseAccessor<AppDatabase> with _$LanguageDaoMixin {
-  LanguageDao(AppDatabase db) : super(db);
+  LanguageDao(super.db);
   
   /// Obtener todos los idiomas
   Future<List<Language>> getAllLanguages() async {

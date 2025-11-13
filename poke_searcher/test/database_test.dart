@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:drift/native.dart';
 import 'package:poke_searcher/database/app_database.dart';
 
 void main() {

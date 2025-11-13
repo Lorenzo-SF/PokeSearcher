@@ -41,10 +41,10 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
   List<Type> _types = [];
   Map<String, int> _stats = {};
   List<Move> _moves = [];
-  Map<int, Type?> _moveTypes = {}; // moveId -> Type
-  Map<int, String?> _moveDamageClasses = {}; // moveId -> damageClassName
+  final Map<int, Type?> _moveTypes = {}; // moveId -> Type
+  final Map<int, String?> _moveDamageClasses = {}; // moveId -> damageClassName
   List<PokemonData> _evolutions = [];
-  List<PokemonData> _variants = [];
+  final List<PokemonData> _variants = [];
   String? _genus;
   String? _description;
   String? _pokemonName;
@@ -1368,7 +1368,7 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
           child: Column(
             children: [
               Expanded(
-                child: Container(
+                child: SizedBox(
                   width: double.infinity,
                   child: PokemonImage(
                     imagePath: imageUrl,

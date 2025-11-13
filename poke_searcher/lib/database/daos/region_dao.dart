@@ -9,7 +9,7 @@ part 'region_dao.g.dart';
 /// Data Access Object para operaciones con regiones
 @DriftAccessor(tables: [Regions, LocalizedNames, Pokedex])
 class RegionDao extends DatabaseAccessor<AppDatabase> with _$RegionDaoMixin {
-  RegionDao(AppDatabase db) : super(db);
+  RegionDao(super.db);
   
   /// Obtener todas las regiones
   Future<List<Region>> getAllRegions() async {

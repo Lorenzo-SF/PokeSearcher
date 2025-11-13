@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:drift/drift.dart';
 import '../../database/app_database.dart';
-import '../api/api_named_resource.dart';
 
 /// Mapper para convertir datos de API a entidades de base de datos (Regions)
 class RegionMapper {

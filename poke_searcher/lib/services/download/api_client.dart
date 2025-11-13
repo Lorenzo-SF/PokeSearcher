@@ -50,7 +50,7 @@ class ApiClient {
           // Backoff exponencial más agresivo: esperar más tiempo en cada reintento
           // 5s, 10s, 20s, 30s, 40s
           final waitTime = Duration(seconds: (retryCount * 5).clamp(5, 40));
-          Logger.api('Rate limit alcanzado. Esperando ${waitTime.inSeconds}s antes de reintentar... (intento ${retryCount}/$maxRetries)');
+          Logger.api('Rate limit alcanzado. Esperando ${waitTime.inSeconds}s antes de reintentar... (intento $retryCount/$maxRetries)');
           await Future.delayed(waitTime);
           continue;
         }

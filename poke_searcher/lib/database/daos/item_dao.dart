@@ -7,7 +7,7 @@ part 'item_dao.g.dart';
 /// Data Access Object para operaciones con items
 @DriftAccessor(tables: [Items])
 class ItemDao extends DatabaseAccessor<AppDatabase> with _$ItemDaoMixin {
-  ItemDao(AppDatabase db) : super(db);
+  ItemDao(super.db);
   
   /// Obtener todos los items
   Future<List<Item>> getAllItems() async {

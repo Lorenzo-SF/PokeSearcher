@@ -11,7 +11,7 @@ part 'pokedex_dao.g.dart';
 /// Data Access Object para operaciones con Pokedex
 @DriftAccessor(tables: [Pokedex, PokedexEntries, PokemonSpecies, Regions])
 class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
-  PokedexDao(AppDatabase db) : super(db);
+  PokedexDao(super.db);
   
   /// Obtener todos los pokedex
   Future<List<PokedexData>> getAllPokedex() async {

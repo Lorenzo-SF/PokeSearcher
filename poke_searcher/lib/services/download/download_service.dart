@@ -184,8 +184,7 @@ class DownloadService {
   /// Descargar un tipo de entidad específico (SECUENCIAL - un recurso a la vez)
   Future<void> _downloadEntityType({
     required DownloadPhase phase,
-    required String entityType,
-    int progressOffset = 0, // Offset para acumular progreso total
+    required String entityType, // Offset para acumular progreso total
     ProgressCallback? onProgress,
   }) async {
     // Verificar si ya fue descargado
@@ -615,7 +614,7 @@ class DownloadService {
           
           onProgress?.call(DownloadProgress(
             phase: DownloadPhase.regionData,
-            currentEntity: 'Descargando pokedex ${pokedexIndex}/${incompleteUrls.length}: ${urlToName[pokedexUrl] ?? pokedexData['name'] as String? ?? 'Pokedex'}',
+            currentEntity: 'Descargando pokedex $pokedexIndex/${incompleteUrls.length}: ${urlToName[pokedexUrl] ?? pokedexData['name'] as String? ?? 'Pokedex'}',
             completed: pokedexIndex,
             total: incompleteUrls.length,
           ));
@@ -781,7 +780,7 @@ class DownloadService {
         
         onProgress?.call(DownloadProgress(
           phase: DownloadPhase.regionData,
-          currentEntity: 'Guardando relaciones: ${speciesProcessed}/$totalSpeciesToProcess especies procesadas',
+          currentEntity: 'Guardando relaciones: $speciesProcessed/$totalSpeciesToProcess especies procesadas',
           completed: completedItems,
           total: totalItemsWithPokemon,
         ));
@@ -1071,7 +1070,7 @@ class DownloadService {
           
           onProgress?.call(DownloadProgress(
             phase: DownloadPhase.regionData,
-            currentEntity: 'Descargando pokedex ${pokedexIndex}/${allPokedexUrls.length}: ${urlToName[pokedexUrl] ?? pokedexData['name'] as String? ?? 'Pokedex'}',
+            currentEntity: 'Descargando pokedex $pokedexIndex/${allPokedexUrls.length}: ${urlToName[pokedexUrl] ?? pokedexData['name'] as String? ?? 'Pokedex'}',
             completed: pokedexIndex,
             total: allPokedexUrls.length,
           ));
@@ -1231,7 +1230,7 @@ class DownloadService {
         
         onProgress?.call(DownloadProgress(
           phase: DownloadPhase.regionData,
-          currentEntity: 'Guardando relaciones: ${speciesProcessed}/$totalSpeciesToProcess especies procesadas',
+          currentEntity: 'Guardando relaciones: $speciesProcessed/$totalSpeciesToProcess especies procesadas',
           completed: completedItems,
           total: totalItemsWithPokemon,
         ));

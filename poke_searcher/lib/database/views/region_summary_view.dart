@@ -1,5 +1,4 @@
 import 'package:drift/drift.dart';
-import '../app_database.dart';
 
 /// Vista optimizada para resumen de regiones con contador de pokedex
 /// Nota: Las vistas en Drift requieren acceso a la base de datos

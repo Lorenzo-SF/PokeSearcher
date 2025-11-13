@@ -7,7 +7,7 @@ part 'pokemon_variants_dao.g.dart';
 /// Data Access Object para operaciones con variantes de pokemon
 @DriftAccessor(tables: [PokemonVariants])
 class PokemonVariantsDao extends DatabaseAccessor<AppDatabase> with _$PokemonVariantsDaoMixin {
-  PokemonVariantsDao(AppDatabase db) : super(db);
+  PokemonVariantsDao(super.db);
   
   /// Obtener todas las variantes de un pokemon
   Future<List<PokemonVariant>> getVariants(int pokemonId) async {

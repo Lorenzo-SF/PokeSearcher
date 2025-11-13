@@ -1256,35 +1256,42 @@ function Process-DataForBackup {
     
     & $scriptPath -DataDir $BaseDir -OutputDir $tempDatabaseDir -MediaDir $tempMediaDir
     
-    # Crear ZIP con todos los archivos
+    # Crear un solo ZIP con todo el contenido
     Write-Host ""
     Write-Host "[INFO] Creando archivo ZIP..." -ForegroundColor DarkCyan
-    $zipPath = "C:\Users\loren\Desktop\proyectos\pokesearch\poke_searcher_backup.zip"
+    
+    # Directorio base para el ZIP
+    $zipBasePath = "C:\Users\loren\Desktop\proyectos\pokesearch"
+    $zipPath = Join-Path $zipBasePath "poke_searcher_backup.zip"
     
     # Eliminar ZIP existente si existe
     if (Test-Path $zipPath) {
-        Remove-Item $zipPath -Force
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        Write-Host "  Eliminado ZIP existente" -ForegroundColor DarkGray
     }
     
-    # Comprimir usando .NET (disponible en PowerShell 5.1+)
     Add-Type -AssemblyName System.IO.Compression.FileSystem
+    
+    Write-Host "  Creando ZIP con database y media..." -ForegroundColor DarkCyan
+    
+    # Crear ZIP desde el directorio temporal que contiene database y media
     [System.IO.Compression.ZipFile]::CreateFromDirectory($tempOutputDir, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
     
-    # Calcular tamaño del ZIP
     $zipSize = (Get-Item $zipPath).Length
     $zipSizeMB = [Math]::Round($zipSize / 1MB, 2)
     
     Write-Host ""
     Write-Host "==========================================" -ForegroundColor DarkYellow
     Write-Host "[COMPLETADO] FASE 3: ZIP generado" -ForegroundColor DarkGreen
-    Write-Host "ZIP ubicado en: $zipPath" -ForegroundColor DarkYellow
     Write-Host "Tamaño del ZIP: $zipSizeMB MB" -ForegroundColor DarkYellow
     Write-Host ""
+    Write-Host "ZIP ubicado en: $zipPath" -ForegroundColor DarkYellow
+    Write-Host ""
     Write-Host "Estructura del ZIP:" -ForegroundColor DarkCyan
-    Write-Host "  - database/ (CSV files)" -ForegroundColor DarkGray
+    Write-Host "  - database/ (todos los CSV)" -ForegroundColor DarkGray
     Write-Host "  - media/ (imágenes y sonidos)" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "Sube este ZIP a Cloudflare y proporciona la URL" -ForegroundColor Yellow
+    Write-Host "Sube este ZIP a GitHub Releases y proporciona la URL" -ForegroundColor Yellow
     Write-Host "==========================================" -ForegroundColor DarkYellow
     Write-Host ""
     

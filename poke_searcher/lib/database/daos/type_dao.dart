@@ -8,7 +8,7 @@ part 'type_dao.g.dart';
 /// Data Access Object para operaciones con tipos
 @DriftAccessor(tables: [Types, TypeDamageRelations])
 class TypeDao extends DatabaseAccessor<AppDatabase> with _$TypeDaoMixin {
-  TypeDao(AppDatabase db) : super(db);
+  TypeDao(super.db);
   
   /// Obtener todos los tipos
   Future<List<Type>> getAllTypes() async {

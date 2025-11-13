@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:drift/drift.dart';
@@ -14,10 +15,8 @@ class BackupProcessor {
   final AppDatabase database;
   final AppConfig? appConfig;
   
-  // URL del ZIP en Cloudflare
-  // TODO: Reemplazar con la URL real de Cloudflare cuando esté disponible
-  // Ejemplo: 'https://your-domain.com/poke_searcher_backup.zip'
-  static const String _backupZipUrl = 'YOUR_CLOUDFLARE_URL_HERE';
+  // URL del ZIP en GitHub Releases
+  static const String _backupZipUrl = 'https://github.com/Lorenzo-SF/PokeSearcher/releases/download/1.0.0/poke_searcher_backup.zip';
   
   BackupProcessor({
     required this.database,
@@ -32,6 +31,322 @@ class BackupProcessor {
       await dataDir.create(recursive: true);
     }
     return dataDir;
+  }
+  
+  /// Buscar y mover la carpeta media a la ubicación correcta
+  Future<void> _findAndMoveMediaDirectory(Directory dataDir, Directory targetMediaDir) async {
+    try {
+      // Buscar recursivamente la carpeta media
+      await for (final entity in dataDir.list(recursive: true)) {
+        if (entity is Directory && path.basename(entity.path).toLowerCase() == 'media') {
+          // Encontramos una carpeta media
+          final sourceMediaDir = entity;
+          
+          // Si no es la ubicación objetivo, moverla
+          if (sourceMediaDir.path != targetMediaDir.path) {
+            print('[BackupProcessor] 📦 Moviendo carpeta media de ${sourceMediaDir.path} a ${targetMediaDir.path}');
+            
+            // Si ya existe la carpeta objetivo, eliminarla primero
+            if (await targetMediaDir.exists()) {
+              await targetMediaDir.delete(recursive: true);
+            }
+            
+            // Crear directorio padre si no existe
+            final parentDir = Directory(path.dirname(targetMediaDir.path));
+            if (!await parentDir.exists()) {
+              await parentDir.create(recursive: true);
+            }
+            
+            // Mover la carpeta (copiar y luego eliminar)
+            await _copyDirectory(sourceMediaDir, targetMediaDir);
+            await sourceMediaDir.delete(recursive: true);
+            
+            print('[BackupProcessor] ✅ Carpeta media movida correctamente');
+            return;
+          }
+        }
+      }
+      
+      print('[BackupProcessor] ⚠️ No se encontró carpeta media en el ZIP extraído');
+    } catch (e) {
+      print('[BackupProcessor] ⚠️ Error buscando/moviendo carpeta media: $e');
+      // No es crítico, continuar
+    }
+  }
+  
+  /// Copiar directorio recursivamente
+  Future<void> _copyDirectory(Directory source, Directory target) async {
+    if (!await target.exists()) {
+      await target.create(recursive: true);
+    }
+    
+    await for (final entity in source.list()) {
+      final targetPath = path.join(target.path, path.basename(entity.path));
+      
+      if (entity is File) {
+        await entity.copy(targetPath);
+      } else if (entity is Directory) {
+        await _copyDirectory(entity, Directory(targetPath));
+      }
+    }
+  }
+  
+  /// Descargar ZIP con reintentos infinitos y manejo de errores
+  /// 
+  /// Intenta descargar el ZIP indefinidamente con backoff exponencial
+  /// entre reintentos hasta que tenga éxito o se encuentre un error no recuperable.
+  Future<void> _downloadZipWithRetries({
+    required File zipFile,
+    void Function(String message, double progress)? onProgress,
+    String? languageCode,
+    Duration initialDelay = const Duration(seconds: 2),
+  }) async {
+    int attempt = 0;
+    Duration delay = initialDelay;
+    Exception? lastError;
+    
+    while (true) {
+      attempt++;
+      
+      try {
+        // Actualizar mensaje de progreso
+        if (attempt > 1) {
+          final retryMsg = LoadingMessages.getMessageWithParams(
+            'retrying_download',
+            languageCode,
+            {'attempt': attempt.toString(), 'max': '∞'},
+          );
+          onProgress?.call(retryMsg, 0.05);
+          print('[BackupProcessor] 🔄 Reintento $attempt de descarga...');
+          
+          // Esperar antes de reintentar (backoff exponencial)
+          print('[BackupProcessor] ⏳ Esperando ${delay.inSeconds} segundos antes de reintentar...');
+          await Future.delayed(delay);
+          
+          // Aumentar delay para el siguiente intento (backoff exponencial, máximo 60 segundos)
+          delay = Duration(seconds: (delay.inSeconds * 2).clamp(2, 60));
+        } else {
+          onProgress?.call(
+            LoadingMessages.getMessage('downloading_backup', languageCode),
+            0.05,
+          );
+          print('[BackupProcessor] 📥 Descargando ZIP desde: $_backupZipUrl (intento $attempt)');
+        }
+        
+        // Crear request con headers apropiados para descargas grandes
+        final request = http.Request('GET', Uri.parse(_backupZipUrl));
+        request.headers.addAll({
+          'User-Agent': 'PokeSearcher/1.0',
+          'Accept': '*/*',
+          'Accept-Encoding': 'gzip, deflate',
+          'Connection': 'keep-alive',
+        });
+        
+        // Crear cliente HTTP para esta descarga
+        final client = http.Client();
+        http.StreamedResponse? streamedResponse;
+        int? contentLength;
+        
+        try {
+          // Enviar request con timeout
+          streamedResponse = await client
+            .send(request)
+            .timeout(
+              const Duration(minutes: 30), // Timeout más largo para archivos grandes
+              onTimeout: () {
+                throw TimeoutException(
+                  'La descarga excedió el tiempo máximo de espera (30 minutos)',
+                  const Duration(minutes: 30),
+                );
+              },
+            );
+          
+          // Verificar código de estado
+          if (streamedResponse.statusCode != 200) {
+            await streamedResponse.stream.drain(); // Limpiar stream
+            final httpException = HttpException(
+              'Error descargando backup: código de estado ${streamedResponse.statusCode}',
+              uri: Uri.parse(_backupZipUrl),
+            );
+            // Si es 404, no tiene sentido reintentar
+            if (streamedResponse.statusCode == 404) {
+              print('[BackupProcessor] ❌ Archivo no encontrado (404): $_backupZipUrl');
+              throw httpException;
+            }
+            throw httpException;
+          }
+          
+          // Obtener tamaño total si está disponible
+          contentLength = streamedResponse.contentLength;
+          if (contentLength != null) {
+            print('[BackupProcessor] 📦 Tamaño del archivo: ${(contentLength / 1024 / 1024).toStringAsFixed(2)} MB');
+          }
+          
+          // Descargar usando streaming en chunks para archivos grandes
+          final sink = zipFile.openWrite();
+          int downloadedBytes = 0;
+          const chunkSize = 8192; // 8KB chunks
+          
+          try {
+            await for (final chunk in streamedResponse.stream) {
+              sink.add(chunk);
+              downloadedBytes += chunk.length;
+              
+              // Actualizar progreso cada 1MB descargado
+              if (downloadedBytes % (1024 * 1024) < chunkSize) {
+                if (contentLength != null) {
+                  final progress = (downloadedBytes / contentLength).clamp(0.0, 1.0);
+                  final progressMsg = 'Descargando... ${(downloadedBytes / 1024 / 1024).toStringAsFixed(2)} MB / ${(contentLength / 1024 / 1024).toStringAsFixed(2)} MB';
+                  onProgress?.call(progressMsg, 0.05 + (progress * 0.15)); // 5-20% para descarga
+                } else {
+                  final progressMsg = 'Descargando... ${(downloadedBytes / 1024 / 1024).toStringAsFixed(2)} MB';
+                  onProgress?.call(progressMsg, 0.05); // Progreso fijo si no conocemos el tamaño
+                }
+              }
+            }
+            
+            await sink.flush();
+            await sink.close();
+          } catch (e) {
+            try {
+              await sink.close();
+            } catch (_) {}
+            // Eliminar archivo parcial
+            if (await zipFile.exists()) {
+              await zipFile.delete();
+            }
+            rethrow;
+          } finally {
+            // Asegurar que el stream se cierre de forma segura
+            try {
+              await streamedResponse.stream.drain();
+            } catch (_) {
+              // Ignorar errores al drenar el stream (puede estar ya cerrado)
+            }
+          }
+        } finally {
+          // Cerrar cliente HTTP
+          client.close();
+        }
+        
+        // Si llegamos aquí sin excepción, la descarga fue exitosa
+        // Verificar que el archivo se guardó correctamente
+        if (!await zipFile.exists()) {
+          throw Exception('Error guardando el archivo ZIP descargado');
+        }
+        
+        final fileSize = await zipFile.length();
+        if (fileSize == 0) {
+          throw Exception('El archivo ZIP guardado está vacío');
+        }
+        
+        // Verificar que el tamaño coincide si tenemos content-length
+        if (contentLength != null && fileSize != contentLength) {
+          print('[BackupProcessor] ⚠️ Tamaño del archivo no coincide: esperado $contentLength, obtenido $fileSize');
+          // No es crítico, continuar
+        }
+        
+        print('[BackupProcessor] ✅ ZIP descargado correctamente (${(fileSize / 1024 / 1024).toStringAsFixed(2)} MB) -> ${zipFile.path}');
+        return; // Éxito, salir del bucle y continuar con el proceso
+        
+      } catch (e) {
+        lastError = e is Exception ? e : Exception(e.toString());
+        
+        // Limpiar archivo parcial si existe
+        try {
+          if (await zipFile.exists()) {
+            await zipFile.delete();
+            print('[BackupProcessor] 🗑️ Archivo parcial eliminado');
+          }
+        } catch (_) {
+          // Ignorar errores al limpiar
+        }
+        
+        // Determinar si es un error recuperable o no
+        final isRecoverable = _isRecoverableError(e);
+        
+        if (!isRecoverable) {
+          print('[BackupProcessor] ❌ Error no recuperable: $e');
+          throw lastError;
+        }
+        
+        print('[BackupProcessor] ⚠️ Error en intento $attempt: $e');
+        // Continuar el bucle para reintentar (sin límite)
+      }
+    }
+  }
+  
+  /// Determinar si un error es recuperable (se puede reintentar)
+  bool _isRecoverableError(dynamic error) {
+    final errorString = error.toString().toLowerCase();
+    
+    // Errores HTTP 404 (Not Found) NO son recuperables - el archivo no existe
+    if (errorString.contains('404') || errorString.contains('not found')) {
+      return false;
+    }
+    
+    // Errores HTTP 400, 401, 403 (Bad Request, Unauthorized, Forbidden) NO son recuperables
+    if (errorString.contains('400') || 
+        errorString.contains('401') || 
+        errorString.contains('403')) {
+      return false;
+    }
+    
+    // Errores de timeout son recuperables
+    if (error is TimeoutException) {
+      return true;
+    }
+    
+    // Errores de conexión son recuperables
+    if (errorString.contains('connection') ||
+        errorString.contains('network') ||
+        errorString.contains('socket') ||
+        errorString.contains('failed host lookup') ||
+        errorString.contains('no internet') ||
+        errorString.contains('connection closed')) {
+      return true;
+    }
+    
+    // Errores HTTP 429 (rate limit) son recuperables
+    if (errorString.contains('429')) {
+      return true;
+    }
+    
+    // Errores HTTP 408 (timeout) son recuperables
+    if (errorString.contains('408')) {
+      return true;
+    }
+    
+    // Errores HTTP 5xx (servidor) son recuperables
+    if (errorString.contains('500') ||
+        errorString.contains('502') ||
+        errorString.contains('503') ||
+        errorString.contains('504')) {
+      return true;
+    }
+    
+    // Si es HttpException, verificar el código de estado
+    if (error is HttpException) {
+      // Ya verificamos 404, 400, 401, 403 arriba
+      // Los demás códigos de error HTTP pueden ser recuperables
+      return true;
+    }
+    
+    // Errores de formato o validación NO son recuperables
+    if (errorString.contains('format') ||
+        errorString.contains('invalid') ||
+        errorString.contains('parse')) {
+      return false;
+    }
+    
+    // Errores de permisos NO son recuperables
+    if (errorString.contains('permission') ||
+        errorString.contains('access denied')) {
+      return false;
+    }
+    
+    // Por defecto, asumir que es recuperable
+    return true;
   }
   
   /// Descargar y extraer el ZIP del backup
@@ -58,19 +373,16 @@ class BackupProcessor {
       }
     }
     
-    // Descargar ZIP
-    onProgress?.call(
-      LoadingMessages.getMessage('downloading_backup', languageCode),
-      0.05,
+    // Obtener directorio temporal para el ZIP
+    final tempDir = await getTemporaryDirectory();
+    final zipFile = File(path.join(tempDir.path, 'poke_searcher_backup.zip'));
+    
+    // Descargar ZIP con reintentos infinitos
+    await _downloadZipWithRetries(
+      zipFile: zipFile,
+      onProgress: onProgress,
+      languageCode: languageCode,
     );
-    print('[BackupProcessor] 📥 Descargando ZIP desde: $_backupZipUrl');
-    
-    final response = await http.get(Uri.parse(_backupZipUrl));
-    if (response.statusCode != 200) {
-      throw Exception('Error descargando backup: ${response.statusCode}');
-    }
-    
-    print('[BackupProcessor] ✅ ZIP descargado (${response.bodyBytes.length} bytes)');
     
     // Extraer ZIP
     onProgress?.call(
@@ -79,44 +391,98 @@ class BackupProcessor {
     );
     print('[BackupProcessor] 📦 Extrayendo ZIP...');
     
-    final zipBytes = response.bodyBytes;
-    final archive = ZipDecoder().decodeBytes(zipBytes);
-    
-    // Limpiar directorio de datos si existe
-    if (await dataDir.exists()) {
-      await dataDir.delete(recursive: true);
-    }
-    await dataDir.create(recursive: true);
-    
-    // Extraer archivos
-    int extracted = 0;
-    final total = archive.length;
-    
-    for (final file in archive) {
-      if (file.isFile) {
-        final filePath = path.join(dataDir.path, file.name);
-        final fileDir = Directory(path.dirname(filePath));
-        if (!await fileDir.exists()) {
-          await fileDir.create(recursive: true);
+    try {
+      // Leer ZIP desde archivo de forma asíncrona
+      final zipBytes = await zipFile.readAsBytes();
+      
+      // Decodificar ZIP en un isolate para no bloquear el hilo principal
+      final archive = await _decodeZipInIsolate(zipBytes);
+      
+      // Limpiar directorio de datos si existe
+      if (await dataDir.exists()) {
+        await dataDir.delete(recursive: true);
+      }
+      await dataDir.create(recursive: true);
+      
+      // Extraer archivos en chunks para permitir actualizaciones de UI
+      int extracted = 0;
+      final files = archive.whereType<ArchiveFile>().toList();
+      final total = files.length;
+      const chunkSize = 50; // Procesar 50 archivos por chunk
+      
+      for (int i = 0; i < files.length; i += chunkSize) {
+        final endIndex = (i + chunkSize < files.length) ? i + chunkSize : files.length;
+        final chunk = files.sublist(i, endIndex);
+        
+        // Procesar chunk
+        for (final file in chunk) {
+          if (file.isFile) {
+            final filePath = path.join(dataDir.path, file.name);
+            final fileDir = Directory(path.dirname(filePath));
+            if (!await fileDir.exists()) {
+              await fileDir.create(recursive: true);
+            }
+            
+            final outFile = File(filePath);
+            await outFile.writeAsBytes(file.content as List<int>);
+            extracted++;
+          }
         }
         
-        final outFile = File(filePath);
-        await outFile.writeAsBytes(file.content as List<int>);
-        extracted++;
+        // Permitir que la UI se actualice después de cada chunk
+        await Future.delayed(Duration.zero);
         
-        if (extracted % 100 == 0) {
+        // Actualizar progreso
+        if (extracted % 100 == 0 || extracted == total) {
           final progress = 0.1 + (extracted / total) * 0.1;
           onProgress?.call(
-            LoadingMessages.getMessage('extracting_backup', languageCode),
+            'Extrayendo... ($extracted/$total archivos)',
             progress,
           );
-          print('[BackupProcessor] Extraídos $extracted/$total archivos...');
         }
       }
+      
+      print('[BackupProcessor] ✅ ZIP extraído: $extracted archivos');
+      
+      // Asegurar que la carpeta media esté en la ubicación correcta
+      final targetMediaDir = Directory(path.join(dataDir.path, 'media'));
+      
+      if (await targetMediaDir.exists()) {
+        print('[BackupProcessor] ✅ Carpeta media encontrada en ubicación correcta: ${targetMediaDir.path}');
+      } else {
+        // Buscar la carpeta media en otras ubicaciones posibles dentro del ZIP extraído
+        print('[BackupProcessor] 🔍 Buscando carpeta media en otras ubicaciones...');
+        await _findAndMoveMediaDirectory(dataDir, targetMediaDir);
+        
+        // Verificar nuevamente después de mover
+        if (await targetMediaDir.exists()) {
+          print('[BackupProcessor] ✅ Carpeta media movida y verificada: ${targetMediaDir.path}');
+        } else {
+          print('[BackupProcessor] ⚠️ Carpeta media no encontrada después de la búsqueda');
+        }
+      }
+      
+      // Borrar el ZIP después de extraer
+      try {
+        if (await zipFile.exists()) {
+          await zipFile.delete();
+          print('[BackupProcessor] ✅ ZIP borrado después de extraer');
+        }
+      } catch (e) {
+        print('[BackupProcessor] ⚠️ No se pudo borrar el ZIP (no crítico): $e');
+      }
+      
+      return dataDir;
+    } catch (e) {
+      print('[BackupProcessor] ❌ Error extrayendo ZIP: $e');
+      // Intentar borrar el ZIP incluso si hay error
+      try {
+        if (await zipFile.exists()) {
+          await zipFile.delete();
+        }
+      } catch (_) {}
+      rethrow;
     }
-    
-    print('[BackupProcessor] ✅ ZIP extraído: $extracted archivos');
-    return dataDir;
   }
   
   /// Procesar un backup desde ZIP descargado
@@ -275,10 +641,10 @@ class BackupProcessor {
         } catch (e, stackTrace) {
           print('[BackupProcessor] ❌ ERROR parseando CSV $fileName: $e');
           print('[BackupProcessor] Stack trace: $stackTrace');
-          rethrow;
-        }
-      }
-      
+      rethrow;
+    }
+  }
+  
       // Insertar todos los datos en una sola transacción (mucho más rápido)
       // Ajustar progreso: 20% para descarga/extracción, 80% para procesamiento CSV
       final executingMsg = LoadingMessages.getMessage('executing', languageCode);
@@ -300,9 +666,9 @@ class BackupProcessor {
               
               if (rows == null || rows.isEmpty) {
                 print('[BackupProcessor] ⚠️ Archivo $fileName está vacío o no se pudo parsear, saltando...');
-            continue;
-          }
-              
+        continue;
+      }
+      
               final headers = rows[0];
               final dataRows = rows.sublist(1);
               
@@ -356,6 +722,16 @@ class BackupProcessor {
   
   /// Función estática para parsear CSV en un isolate
   /// Maneja correctamente saltos de línea dentro de campos entre comillas
+  /// Decodificar ZIP en un isolate para no bloquear el hilo principal
+  static Future<Archive> _decodeZipInIsolate(List<int> zipBytes) async {
+    return await compute(_decodeZipIsolate, zipBytes);
+  }
+  
+  /// Función estática para decodificar ZIP en isolate
+  static Archive _decodeZipIsolate(List<int> zipBytes) {
+    return ZipDecoder().decodeBytes(zipBytes);
+  }
+  
   static List<List<String>> _parseCsvIsolate(String csvContent) {
     final rows = <List<String>>[];
     final fields = <String>[];
@@ -371,7 +747,7 @@ class BackupProcessor {
           // Comilla escapada ("" dentro de comillas)
           buffer.write('"');
           i++; // Saltar la siguiente comilla
-        } else {
+          } else {
           // Toggle quotes
           inQuotes = !inQuotes;
         }
@@ -395,8 +771,8 @@ class BackupProcessor {
         // Saltar \r si viene seguido de \n
         if (char == '\r' && i + 1 < csvContent.length && csvContent[i + 1] == '\n') {
           i++;
-        }
-      } else {
+          }
+        } else {
         // Cualquier otro carácter (incluyendo saltos de línea dentro de comillas)
         buffer.write(char);
       }

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import '../database/app_database.dart';
 import '../services/config/app_config.dart';
 import '../services/backup/backup_processor.dart';
@@ -82,51 +81,51 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _checkAndDownload() async {
-    // Ejecutar verificación en un microtask para no bloquear la UI
-    await Future.microtask(() async {
-      // Verificar si la base de datos está vacía
-      final hasData = await _hasInitialData();
-      
-      if (!hasData) {
-        // Actualizar UI antes de iniciar carga pesada
-        if (mounted) {
-          setState(() {
-            _isDownloading = true;
-            _statusText = 'Cargando base de datos...';
-          });
-        }
-
-        // Cargar datos desde assets (SQL + multimedia) en segundo plano
-        // Usar unawaited para no bloquear, pero manejar errores
-        _loadInitialData().then((_) {
-          // Navegar después de cargar
-          if (mounted) {
-            _navigateToRegions();
-          }
-        }).catchError((error) {
-          if (mounted) {
-            setState(() {
-              _statusText = 'Error: $error';
-            });
-          }
+    // Ejecutar verificación de forma asíncrona sin bloquear la UI
+    // Usar Future.delayed con Duration.zero para diferir al siguiente frame
+    await Future.delayed(Duration.zero);
+    
+    // Verificar si la base de datos está vacía
+    final hasData = await _hasInitialData();
+    
+    if (!hasData) {
+      // Actualizar UI antes de iniciar carga pesada
+      if (mounted) {
+        setState(() {
+          _isDownloading = true;
+          _statusText = LoadingMessages.getMessage('preparing', widget.appConfig.language);
         });
-      } else {
-        if (mounted) {
-          setState(() {
-            _statusText = 'Cargando aplicación...';
-            _progress = 1.0;
-          });
-        }
-        
-        // Esperar un momento para mostrar la animación
-        await Future.delayed(const Duration(seconds: 1));
-        
-        // Navegar a la pantalla de regiones
+      }
+
+      // Cargar datos desde assets (SQL + multimedia) en segundo plano
+      _loadInitialData().then((_) {
+        // Navegar después de cargar
         if (mounted) {
           _navigateToRegions();
         }
+      }).catchError((error) {
+        if (mounted) {
+          setState(() {
+            _statusText = 'Error: $error';
+          });
+        }
+      });
+    } else {
+      if (mounted) {
+        setState(() {
+          _statusText = LoadingMessages.getMessage('loading_app', widget.appConfig.language);
+          _progress = 1.0;
+        });
       }
-    });
+      
+      // Esperar un momento para mostrar la animación
+      await Future.delayed(const Duration(seconds: 1));
+      
+      // Navegar a la pantalla de regiones
+      if (mounted) {
+        _navigateToRegions();
+      }
+    }
   }
   
   /// Navegar a la pantalla de regiones
@@ -165,12 +164,14 @@ class _SplashScreenState extends State<SplashScreen>
         appConfig: widget.appConfig,
       );
 
-      // Ejecutar en chunks con delays para permitir que la UI se actualice
+      // Procesar backup con callbacks optimizados para UI
       await backupProcessor.processBackupFromAssets(
         onProgress: (message, progress) {
-          // Usar scheduleMicrotask para asegurar que setState se ejecute en el hilo de UI
+          // Actualizar UI de forma eficiente sin bloquear
           if (mounted) {
-            scheduleMicrotask(() {
+            // Usar Future.microtask solo si realmente necesitamos diferir
+            // En este caso, setState es seguro porque ya estamos en el hilo de UI
+            WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) {
                 setState(() {
                   _progress = progress;
@@ -184,14 +185,10 @@ class _SplashScreenState extends State<SplashScreen>
       
       // Actualizar estado final
       if (mounted) {
-        scheduleMicrotask(() {
-          if (mounted) {
-            setState(() {
-              _downloadComplete = true;
-              _statusText = '¡Carga completada!';
-              _progress = 1.0;
-            });
-          }
+        setState(() {
+          _downloadComplete = true;
+          _statusText = LoadingMessages.getMessage('load_complete', widget.appConfig.language);
+          _progress = 1.0;
         });
         
         // Esperar un momento antes de navegar
@@ -199,12 +196,8 @@ class _SplashScreenState extends State<SplashScreen>
       }
     } catch (e) {
       if (mounted) {
-        scheduleMicrotask(() {
-          if (mounted) {
-            setState(() {
-              _statusText = 'Error cargando datos: $e';
-            });
-          }
+        setState(() {
+          _statusText = '${LoadingMessages.getMessage('error_loading', widget.appConfig.language)}: $e';
         });
       }
       rethrow;
