@@ -78,7 +78,8 @@
 
 # Archivos de datos grandes (si los hay)
 # **/pokemon_data/
-# **/assets/downloads/
+/poke_searcher/assets/database/
+/poke_searcher/assets/media/
 
 # Archivos de configuración local
 **/.env

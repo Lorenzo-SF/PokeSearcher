@@ -1,11 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 import '../database/app_database.dart';
 import '../services/config/app_config.dart';
 import '../database/daos/language_dao.dart';
-import '../database/daos/region_dao.dart';
-import '../services/download/download_service.dart';
-import '../services/download/download_manager.dart';
 
 class ConfigurationScreen extends StatefulWidget {
   final AppDatabase database;
@@ -25,10 +26,8 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
   String _selectedTheme = 'system';
   String? _selectedLanguage;
   List<Language> _availableLanguages = [];
-  List<Region> _regions = [];
   bool _isLoadingLanguages = true;
-  bool _isDownloadingEssential = false;
-  final Map<int, bool> _isDownloadingRegion = {};
+  bool _isResettingDatabase = false;
 
   @override
   void initState() {
@@ -36,7 +35,6 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
     _selectedTheme = widget.appConfig.theme;
     _selectedLanguage = widget.appConfig.language;
     _loadLanguages();
-    _loadRegions();
   }
 
   Future<void> _loadLanguages() async {
@@ -60,24 +58,6 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
     }
   }
 
-  Future<void> _loadRegions() async {
-    try {
-      final regionDao = RegionDao(widget.database);
-      final regions = await regionDao.getAllRegions();
-      setState(() {
-        _regions = regions;
-      });
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al cargar regiones: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
 
   Future<void> _saveTheme(String theme) async {
     await widget.appConfig.setTheme(theme);
@@ -152,111 +132,86 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
     return language.name;
   }
 
-  Future<void> _forceDownloadEssential() async {
-    if (_isDownloadingEssential) return;
+  /// Forzar recarga de la base de datos: borra la DB y cierra la app
+  Future<void> _forceResetDatabase() async {
+    if (_isResettingDatabase) return;
 
-    setState(() => _isDownloadingEssential = true);
+    // Mostrar diálogo de confirmación
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('¿Recargar base de datos?'),
+        content: const Text(
+          'Esto borrará todos los datos de la base de datos y cerrará la aplicación. '
+          'Al reiniciar, la aplicación cargará los datos desde los archivos CSV como si fuera la primera ejecución.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Recargar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _isResettingDatabase = true);
 
     try {
-      final downloadService = DownloadService(database: widget.database);
+      // Cerrar la conexión de la base de datos
+      await widget.database.close();
 
-      // Marcar como no completada para forzar descarga
+      // Obtener el path del archivo de la base de datos
+      final dbFolder = await getApplicationDocumentsDirectory();
+      final dbFile = File(p.join(dbFolder.path, 'poke_search.db'));
+
+      // Eliminar el archivo de la base de datos si existe
+      if (await dbFile.exists()) {
+        await dbFile.delete();
+      }
+
+      // También eliminar archivos relacionados (wal, shm)
+      final walFile = File(p.join(dbFolder.path, 'poke_search.db-wal'));
+      final shmFile = File(p.join(dbFolder.path, 'poke_search.db-shm'));
+      
+      if (await walFile.exists()) {
+        await walFile.delete();
+      }
+      if (await shmFile.exists()) {
+        await shmFile.delete();
+      }
+
+      // Marcar como no completada la descarga inicial
       await widget.appConfig.setInitialDownloadCompleted(false);
 
-      // Mostrar diálogo de progreso
-      if (!mounted) return;
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => _DownloadProgressDialog(
-          onProgress: (progress) {
-            // El diálogo se actualiza automáticamente
-          },
-        ),
-      );
-
-      await downloadService.downloadEssentialData(
-        onProgress: (progress) {
-          // El diálogo se actualiza a través del DownloadManager
-        },
-      );
-
-      await widget.appConfig.setInitialDownloadCompleted(true);
-
       if (mounted) {
-        Navigator.of(context).pop(); // Cerrar diálogo
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Descarga esencial completada'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        // Cerrar la aplicación
+        if (Platform.isAndroid || Platform.isIOS) {
+          // En móviles, usar SystemNavigator
+          SystemNavigator.pop();
+        } else {
+          // En desktop, usar exit
+          exit(0);
+        }
       }
     } catch (e) {
       if (mounted) {
-        Navigator.of(context).pop(); // Cerrar diálogo si está abierto
+        setState(() => _isResettingDatabase = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error al descargar: $e'),
+            content: Text('Error al recargar base de datos: $e'),
             backgroundColor: Colors.red,
           ),
         );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isDownloadingEssential = false);
-      }
-    }
-  }
-
-  Future<void> _forceDownloadRegion(int regionId, String regionName) async {
-    if (_isDownloadingRegion[regionId] == true) return;
-
-    setState(() => _isDownloadingRegion[regionId] = true);
-
-    try {
-      final downloadService = DownloadService(database: widget.database);
-
-      // Mostrar diálogo de progreso
-      if (!mounted) return;
-      final controller = _DownloadProgressController();
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => _DownloadProgressDialog(
-          onProgress: controller.updateProgress,
-        ),
-      );
-
-      await downloadService.downloadRegionComplete(
-        regionId: regionId,
-        onProgress: (progress) {
-          controller.updateProgress(progress);
-        },
-      );
-
-      if (mounted) {
-        Navigator.of(context).pop(); // Cerrar diálogo
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Región $regionName descargada correctamente'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        Navigator.of(context).pop(); // Cerrar diálogo si está abierto
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al descargar región: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isDownloadingRegion[regionId] = false);
       }
     }
   }
@@ -471,138 +426,40 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
         ),
         const SizedBox(height: 16),
         
-        // Botón para forzar descarga esencial
+        // Botón para forzar recarga de base de datos
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
-            onPressed: _isDownloadingEssential ? null : _forceDownloadEssential,
-            icon: _isDownloadingEssential
+            onPressed: _isResettingDatabase ? null : _forceResetDatabase,
+            icon: _isResettingDatabase
                 ? const SizedBox(
                     width: 20,
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(Icons.download),
-            label: Text(_isDownloadingEssential
-                ? 'Descargando...'
-                : 'Forzar descarga de datos esenciales'),
+                : const Icon(Icons.refresh),
+            label: Text(_isResettingDatabase
+                ? 'Recargando...'
+                : 'Recargar base de datos'),
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
             ),
           ),
         ),
-        const SizedBox(height: 24),
-        
-        // Botones por región
+        const SizedBox(height: 8),
         const Text(
-          'Forzar descarga por región:',
+          'Esto borrará todos los datos y cerrará la aplicación. '
+          'Al reiniciar, se cargarán los datos desde los archivos CSV.',
           style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
+            fontSize: 12,
+            color: Colors.grey,
           ),
         ),
-        const SizedBox(height: 12),
-        ..._regions.map((region) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: _isDownloadingRegion[region.id] == true
-                      ? null
-                      : () => _forceDownloadRegion(region.id, region.name),
-                  icon: _isDownloadingRegion[region.id] == true
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.map),
-                  label: Text(
-                    _isDownloadingRegion[region.id] == true
-                        ? 'Descargando ${region.name}...'
-                        : 'Forzar descarga: ${region.name}',
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                ),
-              ),
-            )),
       ],
     );
   }
 }
 
-/// Controlador para actualizar el progreso de descarga en el diálogo
-class _DownloadProgressController {
-  final _progressStream = StreamController<DownloadProgress>.broadcast();
-
-  Stream<DownloadProgress> get progressStream => _progressStream.stream;
-
-  void updateProgress(DownloadProgress progress) {
-    _progressStream.add(progress);
-  }
-
-  void dispose() {
-    _progressStream.close();
-  }
-}
-
-/// Diálogo de progreso de descarga
-class _DownloadProgressDialog extends StatefulWidget {
-  final Function(DownloadProgress)? onProgress;
-
-  const _DownloadProgressDialog({this.onProgress});
-
-  @override
-  State<_DownloadProgressDialog> createState() => _DownloadProgressDialogState();
-}
-
-class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
-  DownloadProgress? _currentProgress;
-
-  @override
-  void initState() {
-    super.initState();
-    // El progreso se actualiza a través del callback onProgress
-    if (widget.onProgress != null) {
-      // Por ahora, el progreso se actualiza externamente
-    }
-  }
-
-  void updateProgress(DownloadProgress progress) {
-    if (mounted) {
-      setState(() {
-        _currentProgress = progress;
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Descargando...'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (_currentProgress != null) ...[
-            Text(_currentProgress!.currentEntity),
-            const SizedBox(height: 16),
-            LinearProgressIndicator(
-              value: _currentProgress!.total > 0
-                  ? _currentProgress!.completed / _currentProgress!.total
-                  : 0.0,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '${_currentProgress!.completed} / ${_currentProgress!.total}',
-              style: const TextStyle(fontSize: 12),
-            ),
-          ] else
-            const CircularProgressIndicator(),
-        ],
-      ),
-    );
-  }
-}
 

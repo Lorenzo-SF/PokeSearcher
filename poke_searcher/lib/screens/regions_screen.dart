@@ -6,7 +6,7 @@ import '../database/daos/region_dao.dart';
 import '../database/daos/pokedex_dao.dart';
 import '../database/daos/pokemon_dao.dart';
 import '../services/download/download_service.dart';
-import '../services/download/download_manager.dart';
+import '../widgets/pokemon_image.dart';
 import 'pokemon_list_screen.dart';
 import 'configuration_screen.dart';
 import '../utils/logger.dart';
@@ -45,67 +45,80 @@ class _RegionsScreenState extends State<RegionsScreen> {
   Future<void> _loadRegions() async {
     try {
       final regionDao = RegionDao(widget.database);
-      final pokedexDao = PokedexDao(widget.database);
-      final pokemonDao = PokemonDao(widget.database);
-      final downloadService = DownloadService(database: widget.database);
       final regions = await regionDao.getAllRegions();
       
-      // Obtener contador de pokemons únicos, estado de descarga y pokemons iniciales para cada región
-      final regionsWithData = await Future.wait(
-        regions.map((region) async {
-          final pokemonCount = await pokedexDao.getUniquePokemonCountByRegion(region.id);
-          final isComplete = await downloadService.isRegionFullyDownloaded(region.id);
-          
-          // Cargar los 3 pokemons iniciales
-          List<PokemonData> starters = [];
-          try {
-            final starterSpecies = await pokedexDao.getStarterPokemon(region.id);
-            for (final species in starterSpecies) {
-              final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
-              if (pokemons.isNotEmpty) {
-                starters.add(pokemons.first); // Tomar el primer pokemon de la especie
-              }
-            }
-          } catch (e) {
-            Logger.error('Error al cargar pokemons iniciales', context: LogContext.region, error: e);
-          }
-          
-          return {
-            'region': RegionData(
-              id: region.id,
-              name: region.name,
-              pokedexCount: pokemonCount, // Ahora es el conteo de pokemons únicos
-            ),
-            'isComplete': isComplete,
-            'starters': starters,
-          };
-        }),
-      );
-      
-      // Separar regiones, estados y pokemons iniciales
-      final List<RegionData> regionsList = [];
-      final Map<int, bool> completeStatus = {};
-      final Map<int, List<PokemonData>> starterPokemons = {};
-      
-      for (final data in regionsWithData) {
-        final region = data['region'] as RegionData;
-        regionsList.add(region);
-        completeStatus[region.id] = data['isComplete'] as bool;
-        starterPokemons[region.id] = data['starters'] as List<PokemonData>;
-      }
+      // Primero mostrar las regiones básicas (sin datos adicionales) para que la UI aparezca rápido
+      final regionsList = regions.map((r) => RegionData(
+        id: r.id,
+        name: r.name,
+        pokedexCount: 0, // Se actualizará después
+      )).toList();
       
       setState(() {
         _regions = regionsList;
-        _regionCompleteStatus.clear();
-        _regionCompleteStatus.addAll(completeStatus);
-        _starterPokemons.clear();
-        _starterPokemons.addAll(starterPokemons);
-        _isLoading = false;
+        _isLoading = false; // Mostrar UI inmediatamente
       });
+      
+      // Luego cargar datos adicionales de forma asíncrona (sin bloquear UI)
+      _loadRegionsAdditionalData(regionsList);
     } catch (e) {
       setState(() {
         _isLoading = false;
       });
+    }
+  }
+  
+  /// Cargar datos adicionales de regiones de forma asíncrona
+  Future<void> _loadRegionsAdditionalData(List<RegionData> regions) async {
+    try {
+      final pokedexDao = PokedexDao(widget.database);
+      final pokemonDao = PokemonDao(widget.database);
+      final downloadService = DownloadService(database: widget.database);
+      
+      // Cargar datos para cada región de forma incremental
+      for (final region in regions) {
+        if (!mounted) break;
+        
+        // Cargar datos de esta región
+        final pokemonCount = await pokedexDao.getUniquePokemonCountByRegion(region.id);
+        final isComplete = await downloadService.isRegionFullyDownloaded(region.id);
+        
+        // Cargar los 3 pokemons iniciales
+        List<PokemonData> starters = [];
+        try {
+          final starterSpecies = await pokedexDao.getStarterPokemon(region.id);
+          for (final species in starterSpecies) {
+            final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
+            if (pokemons.isNotEmpty) {
+              starters.add(pokemons.first);
+            }
+          }
+        } catch (e) {
+          Logger.error('Error al cargar pokemons iniciales', context: LogContext.region, error: e);
+        }
+        
+        // Actualizar UI incrementalmente
+        if (mounted) {
+          setState(() {
+            // Actualizar región con el conteo correcto
+            final index = _regions.indexWhere((r) => r.id == region.id);
+            if (index >= 0) {
+              _regions[index] = RegionData(
+                id: region.id,
+                name: region.name,
+                pokedexCount: pokemonCount,
+              );
+            }
+            _regionCompleteStatus[region.id] = isComplete;
+            _starterPokemons[region.id] = starters;
+          });
+        }
+        
+        // Pequeña pausa para no bloquear el hilo principal
+        await Future.delayed(const Duration(milliseconds: 10));
+      }
+    } catch (e) {
+      Logger.error('Error al cargar datos adicionales de regiones', context: LogContext.region, error: e);
     }
   }
   
@@ -153,24 +166,36 @@ class _RegionsScreenState extends State<RegionsScreen> {
     }
   }
   
-  /// Obtener la mejor imagen disponible para un pokemon
-  String? _getBestImageUrl(PokemonData? pokemon) {
-    if (pokemon == null) return null;
+  /// Obtener la mejor imagen disponible para un pokemon desde assets
+  String? _getBestImagePath(PokemonData? pokemon) {
+    if (pokemon == null) {
+      print('[RegionsScreen] _getBestImagePath: pokemon es null');
+      return null;
+    }
+    
+    print('[RegionsScreen] _getBestImagePath para pokemon ${pokemon.name} (id: ${pokemon.id}):');
+    print('  - artworkOfficialPath: ${pokemon.artworkOfficialPath}');
+    print('  - spriteFrontDefaultPath: ${pokemon.spriteFrontDefaultPath}');
     
     // Prioridad: artwork oficial > sprite front default
-    if (pokemon.artworkOfficialUrl != null && pokemon.artworkOfficialUrl!.isNotEmpty) {
-      return pokemon.artworkOfficialUrl;
+    if (pokemon.artworkOfficialPath != null && pokemon.artworkOfficialPath!.isNotEmpty) {
+      print('[RegionsScreen] Usando artworkOfficialPath: ${pokemon.artworkOfficialPath}');
+      return pokemon.artworkOfficialPath;
     }
-    if (pokemon.artworkOfficialShinyUrl != null && pokemon.artworkOfficialShinyUrl!.isNotEmpty) {
-      return pokemon.artworkOfficialShinyUrl;
+    if (pokemon.artworkOfficialShinyPath != null && pokemon.artworkOfficialShinyPath!.isNotEmpty) {
+      print('[RegionsScreen] Usando artworkOfficialShinyPath: ${pokemon.artworkOfficialShinyPath}');
+      return pokemon.artworkOfficialShinyPath;
     }
-    if (pokemon.spriteFrontDefaultUrl != null && pokemon.spriteFrontDefaultUrl!.isNotEmpty) {
-      return pokemon.spriteFrontDefaultUrl;
+    if (pokemon.spriteFrontDefaultPath != null && pokemon.spriteFrontDefaultPath!.isNotEmpty) {
+      print('[RegionsScreen] Usando spriteFrontDefaultPath: ${pokemon.spriteFrontDefaultPath}');
+      return pokemon.spriteFrontDefaultPath;
     }
-    if (pokemon.spriteFrontShinyUrl != null && pokemon.spriteFrontShinyUrl!.isNotEmpty) {
-      return pokemon.spriteFrontShinyUrl;
+    if (pokemon.spriteFrontShinyPath != null && pokemon.spriteFrontShinyPath!.isNotEmpty) {
+      print('[RegionsScreen] Usando spriteFrontShinyPath: ${pokemon.spriteFrontShinyPath}');
+      return pokemon.spriteFrontShinyPath;
     }
     
+    print('[RegionsScreen] ⚠️ No se encontró ninguna imagen válida para pokemon ${pokemon.name}');
     return null;
   }
 
@@ -194,121 +219,22 @@ class _RegionsScreenState extends State<RegionsScreen> {
     return 'assets/$normalized.png';
   }
   
-  /// Manejar tap en una tarjeta de región
+  /// Manejar tap en una tarjeta de región - Navega directamente al listado
   Future<void> _handleRegionTap(RegionData region) async {
-    final downloadService = DownloadService(database: widget.database);
-    
-    // Verificar si la región está completamente descargada
-    // IMPORTANTE: Verificar siempre antes de decidir qué hacer
-    final isComplete = await downloadService.isRegionFullyDownloaded(region.id);
-    
-    if (isComplete) {
-      // Navegar a la lista de pokemons
-      if (mounted) {
-        await Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (context) => PokemonListScreen(
-              database: widget.database,
-              appConfig: widget.appConfig,
-              regionId: region.id,
-              regionName: region.name,
-            ),
-          ),
-        );
-        // Refrescar el estado de la región cuando se vuelve de la navegación
-        await _refreshRegionStatus(region.id);
-      }
-    } else {
-      // Descargar solo las pokedexes incompletas
-      final progressController = _DownloadProgressController();
-      bool dialogShown = false;
-      
-      try {
-        // Mostrar diálogo de progreso
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => _DownloadProgressDialog(
+    // Navegar directamente a la lista de pokemons
+    if (mounted) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => PokemonListScreen(
+            database: widget.database,
+            appConfig: widget.appConfig,
+            regionId: region.id,
             regionName: region.name,
-            controller: progressController,
           ),
-        );
-        dialogShown = true;
-        
-        // Descargar solo pokedexes incompletas
-        await downloadService.downloadIncompletePokedexes(
-          regionId: region.id,
-          onProgress: (progress) {
-            // Actualizar diálogo con progreso
-            progressController.updateProgress(progress);
-          },
-        );
-        
-        // Cerrar diálogo y limpiar controlador
-        progressController.dispose();
-        if (mounted && dialogShown) {
-          Navigator.of(context).pop();
-        }
-        
-        // Actualizar el estado de la región después de descargar (incluye pokemons iniciales)
-        await _refreshRegionStatus(region.id);
-        
-        // Esperar un momento para que el setState se procese
-        await Future.delayed(const Duration(milliseconds: 200));
-        
-        // Verificar nuevamente desde el servicio para asegurar que está actualizado
-        final isNowComplete = await downloadService.isRegionFullyDownloaded(region.id);
-        
-        // Actualizar el estado en memoria
-        if (mounted) {
-          setState(() {
-            _regionCompleteStatus[region.id] = isNowComplete;
-          });
-        }
-        
-        if (mounted) {
-          if (isNowComplete) {
-            // Si ahora está completa, navegar a la lista de pokemons
-            await Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (context) => PokemonListScreen(
-                  database: widget.database,
-                  appConfig: widget.appConfig,
-                  regionId: region.id,
-                  regionName: region.name,
-                ),
-              ),
-            );
-            // Refrescar el estado de la región cuando se vuelve de la navegación
-            await _refreshRegionStatus(region.id);
-          } else {
-            // Mostrar mensaje de éxito
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('${region.name} actualizada'),
-                duration: const Duration(seconds: 2),
-              ),
-            );
-          }
-        }
-      } catch (e) {
-        // Cerrar diálogo y limpiar controlador
-        progressController.dispose();
-        if (mounted && dialogShown) {
-          Navigator.of(context).pop();
-        }
-        
-        // Mostrar error
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error al descargar ${region.name}: $e'),
-              backgroundColor: Colors.red,
-              duration: const Duration(seconds: 3),
-            ),
-          );
-        }
-      }
+        ),
+      );
+      // Refrescar el estado de la región cuando se vuelve de la navegación
+      await _refreshRegionStatus(region.id);
     }
   }
 
@@ -478,7 +404,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
                   children: List.generate(3, (i) {
                     final starters = _starterPokemons[region.id] ?? [];
                     final pokemon = i < starters.length ? starters[i] : null;
-                    final imageUrl = _getBestImageUrl(pokemon);
+                    final imagePath = _getBestImagePath(pokemon);
                     
                     return Container(
                       margin: const EdgeInsets.symmetric(horizontal: 6),
@@ -492,37 +418,20 @@ class _RegionsScreenState extends State<RegionsScreen> {
                           width: 1,
                         ),
                       ),
-                      child: imageUrl != null
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(9),
-                              child: Image.network(
-                                imageUrl,
-                                width: 60,
-                                height: 60,
-                                fit: BoxFit.contain,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return const Icon(
-                                    Icons.catching_pokemon,
-                                    color: Colors.white,
-                                    size: 40,
-                                  );
-                                },
-                                loadingBuilder: (context, child, loadingProgress) {
-                                  if (loadingProgress == null) return child;
-                                  return const Center(
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                                    ),
-                                  );
-                                },
-                              ),
-                            )
-                          : const Icon(
-                              Icons.catching_pokemon,
-                              color: Colors.white,
-                              size: 40,
-                            ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(9),
+                        child: PokemonImage(
+                          imagePath: imagePath,
+                          width: 60,
+                          height: 60,
+                          fit: BoxFit.contain,
+                          errorWidget: const Icon(
+                            Icons.catching_pokemon,
+                            color: Colors.white,
+                            size: 40,
+                          ),
+                        ),
+                      ),
                     );
                   }),
                 ),
@@ -694,144 +603,4 @@ class RegionData {
   });
 }
 
-/// Controlador para actualizar el diálogo de progreso
-class _DownloadProgressController {
-  DownloadProgress? _currentProgress;
-  final _progressStream = StreamController<DownloadProgress>.broadcast();
-  
-  Stream<DownloadProgress> get progressStream => _progressStream.stream;
-  
-  void updateProgress(DownloadProgress progress) {
-    _currentProgress = progress;
-    _progressStream.add(progress);
-  }
-  
-  DownloadProgress? get currentProgress => _currentProgress;
-  
-  void dispose() {
-    _progressStream.close();
-  }
-}
-
-/// Diálogo de progreso de descarga
-class _DownloadProgressDialog extends StatefulWidget {
-  final String regionName;
-  final _DownloadProgressController controller;
-  
-  const _DownloadProgressDialog({
-    required this.regionName,
-    required this.controller,
-  });
-  
-  @override
-  State<_DownloadProgressDialog> createState() => _DownloadProgressDialogState();
-}
-
-class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
-  DownloadProgress? _progress;
-  StreamSubscription<DownloadProgress>? _subscription;
-  
-  @override
-  void initState() {
-    super.initState();
-    _progress = widget.controller.currentProgress;
-    
-    // Escuchar actualizaciones de progreso
-    _subscription = widget.controller.progressStream.listen((progress) {
-      if (mounted) {
-        setState(() {
-          _progress = progress;
-        });
-      }
-    });
-  }
-  
-  @override
-  void dispose() {
-    _subscription?.cancel();
-    super.dispose();
-  }
-  
-  @override
-  Widget build(BuildContext context) {
-    final progress = _progress;
-    final percentage = progress?.percentage ?? 0.0;
-    final completed = progress?.completed ?? 0;
-    final total = progress?.total ?? 0;
-    final currentEntity = progress?.currentEntity ?? 'Preparando...';
-    
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Título
-            Text(
-              'Descargando ${widget.regionName}',
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFFDC143C),
-              ),
-            ),
-            const SizedBox(height: 24),
-            
-            // Estado actual
-            Text(
-              currentEntity,
-              style: const TextStyle(
-                fontSize: 14,
-                color: Colors.grey,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            
-            // Barra de progreso
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: LinearProgressIndicator(
-                value: percentage,
-                minHeight: 8,
-                backgroundColor: Colors.grey[300],
-                valueColor: const AlwaysStoppedAnimation<Color>(
-                  Color(0xFFDC143C),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            
-            // Contador y porcentaje
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  '$completed / $total',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey,
-                  ),
-                ),
-                Text(
-                  '${(percentage * 100).toStringAsFixed(1)}%',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFFDC143C),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
 

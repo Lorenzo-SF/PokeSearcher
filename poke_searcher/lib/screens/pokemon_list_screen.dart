@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../database/app_database.dart';
@@ -6,6 +5,8 @@ import '../services/config/app_config.dart';
 import '../database/daos/pokedex_dao.dart';
 import '../database/daos/pokemon_dao.dart';
 import '../utils/color_generator.dart';
+import '../widgets/type_stripe_background.dart';
+import '../widgets/pokemon_image.dart';
 import 'pokemon_detail_screen.dart';
 
 class PokemonListScreen extends StatefulWidget {
@@ -102,46 +103,59 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
     }
   }
 
-  /// Obtener la mejor imagen disponible (SVG preferido, igual que en regiones)
-  String? _getBestImageUrl(PokemonData? pokemon) {
-    if (pokemon == null) return null;
+  /// Obtener la mejor imagen disponible desde assets (SVG preferido)
+  String? _getBestImagePath(PokemonData? pokemon) {
+    if (pokemon == null) {
+      print('[PokemonListScreen] _getBestImagePath: pokemon es null');
+      return null;
+    }
+    
+    print('[PokemonListScreen] _getBestImagePath para pokemon ${pokemon.name} (id: ${pokemon.id}):');
+    print('  - artworkOfficialPath: ${pokemon.artworkOfficialPath}');
+    print('  - artworkOfficialShinyPath: ${pokemon.artworkOfficialShinyPath}');
+    print('  - spriteFrontDefaultPath: ${pokemon.spriteFrontDefaultPath}');
+    print('  - spriteFrontShinyPath: ${pokemon.spriteFrontShinyPath}');
     
     // Prioridad: SVG primero (igual que en regiones)
-    if (pokemon.artworkOfficialUrl != null && 
-        pokemon.artworkOfficialUrl!.isNotEmpty &&
-        pokemon.artworkOfficialUrl!.toLowerCase().endsWith('.svg')) {
-      return pokemon.artworkOfficialUrl;
+    if (pokemon.artworkOfficialPath != null && 
+        pokemon.artworkOfficialPath!.isNotEmpty &&
+        pokemon.artworkOfficialPath!.toLowerCase().endsWith('.svg')) {
+      print('[PokemonListScreen] Usando artworkOfficialPath (SVG): ${pokemon.artworkOfficialPath}');
+      return pokemon.artworkOfficialPath;
     }
-    if (pokemon.artworkOfficialShinyUrl != null && 
-        pokemon.artworkOfficialShinyUrl!.isNotEmpty &&
-        pokemon.artworkOfficialShinyUrl!.toLowerCase().endsWith('.svg')) {
-      return pokemon.artworkOfficialShinyUrl;
+    if (pokemon.artworkOfficialShinyPath != null && 
+        pokemon.artworkOfficialShinyPath!.isNotEmpty &&
+        pokemon.artworkOfficialShinyPath!.toLowerCase().endsWith('.svg')) {
+      return pokemon.artworkOfficialShinyPath;
     }
-    if (pokemon.spriteFrontDefaultUrl != null && 
-        pokemon.spriteFrontDefaultUrl!.isNotEmpty &&
-        pokemon.spriteFrontDefaultUrl!.toLowerCase().endsWith('.svg')) {
-      return pokemon.spriteFrontDefaultUrl;
+    if (pokemon.spriteFrontDefaultPath != null && 
+        pokemon.spriteFrontDefaultPath!.isNotEmpty &&
+        pokemon.spriteFrontDefaultPath!.toLowerCase().endsWith('.svg')) {
+      return pokemon.spriteFrontDefaultPath;
     }
-    if (pokemon.spriteFrontShinyUrl != null && 
-        pokemon.spriteFrontShinyUrl!.isNotEmpty &&
-        pokemon.spriteFrontShinyUrl!.toLowerCase().endsWith('.svg')) {
-      return pokemon.spriteFrontShinyUrl;
+    if (pokemon.spriteFrontShinyPath != null && 
+        pokemon.spriteFrontShinyPath!.isNotEmpty &&
+        pokemon.spriteFrontShinyPath!.toLowerCase().endsWith('.svg')) {
+      return pokemon.spriteFrontShinyPath;
     }
     
     // Si no hay SVG, usar artwork oficial (PNG)
-    if (pokemon.artworkOfficialUrl != null && pokemon.artworkOfficialUrl!.isNotEmpty) {
-      return pokemon.artworkOfficialUrl;
+    if (pokemon.artworkOfficialPath != null && pokemon.artworkOfficialPath!.isNotEmpty) {
+      return pokemon.artworkOfficialPath;
     }
-    if (pokemon.artworkOfficialShinyUrl != null && pokemon.artworkOfficialShinyUrl!.isNotEmpty) {
-      return pokemon.artworkOfficialShinyUrl;
+    if (pokemon.artworkOfficialShinyPath != null && pokemon.artworkOfficialShinyPath!.isNotEmpty) {
+      return pokemon.artworkOfficialShinyPath;
     }
-    if (pokemon.spriteFrontDefaultUrl != null && pokemon.spriteFrontDefaultUrl!.isNotEmpty) {
-      return pokemon.spriteFrontDefaultUrl;
+    if (pokemon.spriteFrontDefaultPath != null && pokemon.spriteFrontDefaultPath!.isNotEmpty) {
+      print('[PokemonListScreen] Usando spriteFrontDefaultPath: ${pokemon.spriteFrontDefaultPath}');
+      return pokemon.spriteFrontDefaultPath;
     }
-    if (pokemon.spriteFrontShinyUrl != null && pokemon.spriteFrontShinyUrl!.isNotEmpty) {
-      return pokemon.spriteFrontShinyUrl;
+    if (pokemon.spriteFrontShinyPath != null && pokemon.spriteFrontShinyPath!.isNotEmpty) {
+      print('[PokemonListScreen] Usando spriteFrontShinyPath: ${pokemon.spriteFrontShinyPath}');
+      return pokemon.spriteFrontShinyPath;
     }
     
+    print('[PokemonListScreen] ⚠️ No se encontró ninguna imagen válida para pokemon ${pokemon.name}');
     return null;
   }
 
@@ -281,6 +295,7 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                         pokemon: pokemon,
                         pokedexNumbers: pokedexNumbers,
                         colors: colors,
+                        types: types,
                       ),
                     );
                   },
@@ -320,10 +335,10 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
     required PokemonData? pokemon,
     required List<Map<String, dynamic>> pokedexNumbers,
     required List<Color> colors,
+    required List<Type> types,
   }) {
-    final imageUrl = _getBestImageUrl(pokemon);
+    final imagePath = _getBestImagePath(pokemon);
     final numbersText = _formatPokedexNumbers(pokedexNumbers);
-    final hasMultipleTypes = colors.length > 1;
     
     return Container(
       decoration: BoxDecoration(
@@ -338,23 +353,15 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
-        child: Stack(
-          children: [
-            // Fondo con color(es) de tipos (franjas ocupando mitad de la tarjeta)
-            if (hasMultipleTypes)
-              // Múltiples tipos: franjas diagonales (45 grados) ocupando mitad
-              _buildDiagonalLinesBackground(colors)
-            else
-              // Un solo tipo: franja diagonal ocupando mitad
-              _buildDiagonalLinesBackground(colors),
-            // Contenido
-            Container(
-              padding: const EdgeInsets.all(8),
-              child: Column(
+        child: TypeStripeBackground(
+          types: types,
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  // Imagen del pokemon (SVG preferido)
+                  // Imagen del pokemon (SVG preferido) desde assets
                   Expanded(
                     child: Container(
                       width: double.infinity,
@@ -366,35 +373,18 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                           width: 1,
                         ),
                       ),
-                      child: imageUrl != null
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(7),
-                              child: Image.network(
-                                imageUrl,
-                                fit: BoxFit.contain,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return const Icon(
-                                    Icons.catching_pokemon,
-                                    size: 32,
-                                    color: Colors.white,
-                                  );
-                                },
-                                loadingBuilder: (context, child, loadingProgress) {
-                                  if (loadingProgress == null) return child;
-                                  return const Center(
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                                    ),
-                                  );
-                                },
-                              ),
-                            )
-                          : const Icon(
-                              Icons.catching_pokemon,
-                              size: 32,
-                              color: Colors.white,
-                            ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(7),
+                        child: PokemonImage(
+                          imagePath: imagePath,
+                          fit: BoxFit.contain,
+                          errorWidget: const Icon(
+                            Icons.catching_pokemon,
+                            size: 32,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 6),
@@ -417,9 +407,9 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 4),
-                  // Nombre del pokemon
+                  // Nombre del pokemon con formato "nombre #numero"
                   Text(
-                    species.name,
+                    '${species.name} #$numbersText',
                     style: const TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.bold,
@@ -438,105 +428,9 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                 ],
               ),
             ),
-          ],
+          ),
         ),
-      ),
-    );
-  }
-
-  /// Construir fondo con franjas diagonales para múltiples pokedexes
-  Widget _buildDiagonalLinesBackground(List<Color> colors) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return CustomPaint(
-          size: Size(constraints.maxWidth, constraints.maxHeight),
-          painter: _DiagonalLinesPainter(colors),
-        );
-      },
-    );
-  }
-}
-
-/// Painter para dibujar franjas diagonales (45 grados) con diferentes colores
-class _DiagonalLinesPainter extends CustomPainter {
-  final List<Color> colors;
-  final double angle = 45 * math.pi / 180; // 45 grados en radianes
-
-  _DiagonalLinesPainter(this.colors);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (colors.isEmpty) return;
-    
-    // Las franjas ocupan el triángulo superior (de esquina superior izquierda a esquina inferior derecha)
-    // Dividir la diagonal en partes iguales según el número de tipos
-    final startRatio = 0.0;
-    final endRatio = 0.5; // Ocupar solo la mitad (triángulo superior)
-    
-    // Dibujar cada franja diagonal formando el triángulo superior
-    for (int i = 0; i < colors.length; i++) {
-      final paint = Paint()
-        ..color = colors[i].withOpacity(0.8)
-        ..style = PaintingStyle.fill;
-      
-      // Calcular los puntos del triángulo
-      // Dividir la mitad de la diagonal en partes iguales
-      final stripeStartRatio = startRatio + (i / colors.length) * (endRatio - startRatio);
-      final stripeEndRatio = startRatio + ((i + 1) / colors.length) * (endRatio - startRatio);
-      
-      // Puntos de inicio y fin en la diagonal (de esquina superior izquierda a mitad de la diagonal)
-      final startX = stripeStartRatio * size.width;
-      final startY = stripeStartRatio * size.height;
-      final endX = stripeEndRatio * size.width;
-      final endY = stripeEndRatio * size.height;
-      
-      // Crear path para el triángulo
-      final path = Path();
-      
-      // Punto superior izquierdo (esquina superior izquierda de la tarjeta)
-      if (i == 0) {
-        path.moveTo(0, 0);
-      } else {
-        path.moveTo(startX, startY);
-      }
-      
-      // Punto en la diagonal (inicio de esta franja)
-      path.lineTo(startX, startY);
-      
-      // Punto en la diagonal (fin de esta franja)
-      path.lineTo(endX, endY);
-      
-      // Punto superior derecho (si es la última franja, va hasta la mitad del borde superior)
-      if (i == colors.length - 1) {
-        path.lineTo(size.width / 2, 0);
-      } else {
-        // Para franjas intermedias, el borde superior es la línea desde startX hasta endX en y=0
-        path.lineTo(endX, 0);
-      }
-      
-      // Cerrar el path
-      path.close();
-      
-      // Dibujar la franja
-      canvas.drawPath(path, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    if (oldDelegate is _DiagonalLinesPainter) {
-      return oldDelegate.colors.length != colors.length ||
-          !_colorsEqual(oldDelegate.colors, colors);
-    }
-    return true;
-  }
-  
-  bool _colorsEqual(List<Color> a, List<Color> b) {
-    if (a.length != b.length) return false;
-    for (int i = 0; i < a.length; i++) {
-      if (a[i].value != b[i].value) return false;
-    }
-    return true;
+      );
   }
 }
 

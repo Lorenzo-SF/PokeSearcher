@@ -2,14 +2,18 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import '../database/app_database.dart';
+import '../utils/media_path_helper.dart';
 import '../services/config/app_config.dart';
 import '../database/daos/pokemon_dao.dart';
 import '../database/daos/pokemon_variants_dao.dart';
 import '../utils/color_generator.dart';
 import '../services/translation/translation_service.dart';
+import '../widgets/type_stripe_background.dart';
+import '../widgets/pokemon_image.dart';
 
 class PokemonDetailScreen extends StatefulWidget {
   final AppDatabase database;
@@ -37,6 +41,8 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
   List<Type> _types = [];
   Map<String, int> _stats = {};
   List<Move> _moves = [];
+  Map<int, Type?> _moveTypes = {}; // moveId -> Type
+  Map<int, String?> _moveDamageClasses = {}; // moveId -> damageClassName
   List<PokemonData> _evolutions = [];
   List<PokemonData> _variants = [];
   String? _genus;
@@ -63,9 +69,15 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
   Future<void> _initializeAudio() async {
     try {
       await _flutterTts.setLanguage('es-ES');
-      await _flutterTts.setSpeechRate(0.5);
+      await _flutterTts.setSpeechRate(0.4); // Más lento para sonar robótico
       await _flutterTts.setVolume(1.0);
-      await _flutterTts.setPitch(1.0);
+      await _flutterTts.setPitch(0.5); // Voz más grave (masculina y robótica)
+      // Intentar usar un motor de voz más robótico si está disponible
+      try {
+        await _flutterTts.setEngine('com.google.android.tts');
+      } catch (e) {
+        // Si no está disponible, continuar con el motor por defecto
+      }
       setState(() {
         _audioInitialized = true;
       });
@@ -97,6 +109,31 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
       
       // Obtener movimientos
       _moves = await pokemonDao.getPokemonMoves(_pokemon!.id);
+      
+      // Obtener tipos y clases de daño de los movimientos
+      _moveTypes.clear();
+      _moveDamageClasses.clear();
+      for (final move in _moves) {
+        // Obtener tipo del movimiento
+        if (move.typeId != null) {
+          final allTypes = await widget.database.select(widget.database.types).get();
+          final moveType = allTypes.firstWhere(
+            (t) => t.id == move.typeId,
+            orElse: () => allTypes.first, // Fallback (no debería pasar)
+          );
+          _moveTypes[move.id] = moveType;
+        }
+        
+        // Obtener clase de daño del movimiento
+        if (move.damageClassId != null) {
+          final allDamageClasses = await widget.database.select(widget.database.moveDamageClasses).get();
+          final damageClass = allDamageClasses.firstWhere(
+            (dc) => dc.id == move.damageClassId,
+            orElse: () => allDamageClasses.first, // Fallback
+          );
+          _moveDamageClasses[move.id] = damageClass.name;
+        }
+      }
       
       // Obtener nombre traducido del pokemon
       if (_species != null) {
@@ -177,23 +214,72 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
   }
 
   Future<void> _playCryAndTTS() async {
-    if (_pokemon == null) return;
+    if (_pokemon == null) {
+      print('[PokemonDetailScreen] ⚠️ _pokemon es null, no se puede reproducir audio');
+      return;
+    }
+    
+    print('[PokemonDetailScreen] 🔊 Iniciando reproducción de cry y TTS');
+    print('[PokemonDetailScreen]   - cryLatestPath: ${_pokemon!.cryLatestPath}');
+    print('[PokemonDetailScreen]   - cryLegacyPath: ${_pokemon!.cryLegacyPath}');
     
     // Esperar 750ms antes de reproducir el cry
     await Future.delayed(const Duration(milliseconds: 750));
     
-    // Reproducir cry si está disponible
-    if (_pokemon!.cryLatestUrl != null && _pokemon!.cryLatestUrl!.isNotEmpty) {
+    // Reproducir cry si está disponible (desde archivos locales)
+    // Prioridad: cryLatestPath > cryLegacyPath
+    String? audioPathToPlay = _pokemon!.cryLatestPath;
+    if (audioPathToPlay == null || audioPathToPlay.isEmpty) {
+      audioPathToPlay = _pokemon!.cryLegacyPath;
+    }
+    
+    if (audioPathToPlay != null && audioPathToPlay.isNotEmpty) {
       try {
-        await _audioPlayer.play(UrlSource(_pokemon!.cryLatestUrl!));
-        // Esperar a que termine el audio
-        await _audioPlayer.onPlayerComplete.first.timeout(
-          const Duration(seconds: 5),
-          onTimeout: () {},
-        );
-      } catch (e) {
+        // Convertir ruta de asset a ruta local
+        final localAudioPath = await MediaPathHelper.assetPathToLocalPath(audioPathToPlay);
+        
+        if (localAudioPath == null) {
+          print('[PokemonDetailScreen] ⚠️ No se pudo convertir ruta de audio a local: $audioPathToPlay');
+          return;
+        }
+        
+        print('[PokemonDetailScreen]   - audioPath original: $audioPathToPlay');
+        print('[PokemonDetailScreen]   - audioPath local: $localAudioPath');
+        
+        // Verificar que el archivo existe
+        final audioFile = File(localAudioPath);
+        if (!await audioFile.exists()) {
+          print('[PokemonDetailScreen] ⚠️ Archivo de audio no existe: $localAudioPath');
+          return;
+        }
+        
+        // Reproducir desde archivo local usando UrlSource con file://
+        print('[PokemonDetailScreen] 📦 Intentando reproducir audio desde archivo: $localAudioPath');
+        final fileAudio = UrlSource('file://$localAudioPath');
+        
+        try {
+          await _audioPlayer.play(fileAudio);
+          print('[PokemonDetailScreen] ✅ Audio reproducido correctamente');
+          
+          // Esperar a que termine el audio (con timeout)
+          await _audioPlayer.onPlayerComplete.first.timeout(
+            const Duration(seconds: 5),
+            onTimeout: () {
+              print('[PokemonDetailScreen] ⏱️ Timeout esperando que termine el audio');
+            },
+          );
+          print('[PokemonDetailScreen] ✅ Audio terminado');
+        } catch (e, stackTrace) {
+          print('[PokemonDetailScreen] ❌ Error reproduciendo audio: $e');
+          print('[PokemonDetailScreen] StackTrace: $stackTrace');
+        }
+      } catch (e, stackTrace) {
+        print('[PokemonDetailScreen] ❌ Error preparando audio: $e');
+        print('[PokemonDetailScreen] StackTrace: $stackTrace');
         // Si falla, continuar con TTS
       }
+    } else {
+      print('[PokemonDetailScreen] ⚠️ No hay ruta de audio disponible para este pokemon');
     }
     
     // Esperar 750ms después del cry
@@ -230,39 +316,54 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
   }
 
   String? _getBestSvgImage() {
-    if (_pokemon == null) return null;
+    if (_pokemon == null) {
+      print('[PokemonDetailScreen] _getBestSvgImage: pokemon es null');
+      return null;
+    }
+    
+    print('[PokemonDetailScreen] _getBestSvgImage para pokemon ${_pokemon!.name} (id: ${_pokemon!.id}, shiny: $_isShiny):');
+    print('  - artworkOfficialPath: ${_pokemon!.artworkOfficialPath}');
+    print('  - artworkOfficialShinyPath: ${_pokemon!.artworkOfficialShinyPath}');
+    print('  - spriteFrontDefaultPath: ${_pokemon!.spriteFrontDefaultPath}');
+    print('  - spriteFrontShinyPath: ${_pokemon!.spriteFrontShinyPath}');
     
     if (_isShiny) {
-      if (_pokemon!.artworkOfficialShinyUrl != null && 
-          _pokemon!.artworkOfficialShinyUrl!.isNotEmpty) {
-        return _pokemon!.artworkOfficialShinyUrl;
+      if (_pokemon!.artworkOfficialShinyPath != null && 
+          _pokemon!.artworkOfficialShinyPath!.isNotEmpty) {
+        print('[PokemonDetailScreen] Usando artworkOfficialShinyPath: ${_pokemon!.artworkOfficialShinyPath}');
+        return _pokemon!.artworkOfficialShinyPath;
       }
-      if (_pokemon!.spriteFrontShinyUrl != null && 
-          _pokemon!.spriteFrontShinyUrl!.isNotEmpty) {
-        return _pokemon!.spriteFrontShinyUrl;
+      if (_pokemon!.spriteFrontShinyPath != null && 
+          _pokemon!.spriteFrontShinyPath!.isNotEmpty) {
+        print('[PokemonDetailScreen] Usando spriteFrontShinyPath: ${_pokemon!.spriteFrontShinyPath}');
+        return _pokemon!.spriteFrontShinyPath;
       }
     }
     
-    if (_pokemon!.artworkOfficialUrl != null && 
-        _pokemon!.artworkOfficialUrl!.toLowerCase().endsWith('.svg')) {
-      return _pokemon!.artworkOfficialUrl;
+    if (_pokemon!.artworkOfficialPath != null && 
+        _pokemon!.artworkOfficialPath!.toLowerCase().endsWith('.svg')) {
+      print('[PokemonDetailScreen] Usando artworkOfficialPath (SVG): ${_pokemon!.artworkOfficialPath}');
+      return _pokemon!.artworkOfficialPath;
     }
-    if (_pokemon!.artworkOfficialUrl != null) {
-      return _pokemon!.artworkOfficialUrl;
+    if (_pokemon!.artworkOfficialPath != null) {
+      print('[PokemonDetailScreen] Usando artworkOfficialPath: ${_pokemon!.artworkOfficialPath}');
+      return _pokemon!.artworkOfficialPath;
     }
-    if (_pokemon!.spriteFrontDefaultUrl != null) {
-      return _pokemon!.spriteFrontDefaultUrl;
+    if (_pokemon!.spriteFrontDefaultPath != null) {
+      print('[PokemonDetailScreen] Usando spriteFrontDefaultPath: ${_pokemon!.spriteFrontDefaultPath}');
+      return _pokemon!.spriteFrontDefaultPath;
     }
     
+    print('[PokemonDetailScreen] ⚠️ No se encontró ninguna imagen válida');
     return null;
   }
   
   bool _hasShinyImage() {
     if (_pokemon == null) return false;
-    return (_pokemon!.artworkOfficialShinyUrl != null && 
-            _pokemon!.artworkOfficialShinyUrl!.isNotEmpty) ||
-           (_pokemon!.spriteFrontShinyUrl != null && 
-            _pokemon!.spriteFrontShinyUrl!.isNotEmpty);
+    return (_pokemon!.artworkOfficialShinyPath != null && 
+            _pokemon!.artworkOfficialShinyPath!.isNotEmpty) ||
+           (_pokemon!.spriteFrontShinyPath != null && 
+            _pokemon!.spriteFrontShinyPath!.isNotEmpty);
   }
   
   void _toggleShiny() {
@@ -648,27 +749,17 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
             color: Colors.transparent,
             borderRadius: BorderRadius.circular(12),
           ),
-          child: imageUrl != null
-              ? Image.network(
-                  imageUrl,
-                  fit: BoxFit.contain,
-                  errorBuilder: (context, error, stackTrace) {
-                    return const Icon(
-                      Icons.catching_pokemon,
-                      size: 150,
-                      color: Colors.white,
-                    );
-                  },
-                  loadingBuilder: (context, child, loadingProgress) {
-                    if (loadingProgress == null) return child;
-                    return const Center(child: CircularProgressIndicator());
-                  },
-                )
-              : const Icon(
-                  Icons.catching_pokemon,
-                  size: 150,
-                  color: Colors.white,
-                ),
+          child: PokemonImage(
+            imagePath: imageUrl,
+            fit: BoxFit.contain,
+            width: 300,
+            height: 300,
+            errorWidget: const Icon(
+              Icons.catching_pokemon,
+              size: 150,
+              color: Colors.white,
+            ),
+          ),
         ),
       ),
     );
@@ -917,71 +1008,175 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Movimientos',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-              shadows: [
-                Shadow(
-                  color: Colors.black,
-                  blurRadius: 3,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          if (_moves.isEmpty)
-            const Text(
-              'No hay movimientos disponibles',
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.white70,
+          ExpansionTile(
+            title: Text(
+              'Movimientos (${_moves.length})',
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
                 shadows: [
                   Shadow(
                     color: Colors.black,
-                    blurRadius: 2,
+                    blurRadius: 3,
                   ),
                 ],
               ),
-            )
-          else
-            ..._moves.take(20).map((move) => _buildMoveCard(move)),
+            ),
+            initiallyExpanded: false, // Contraído por defecto
+            backgroundColor: Colors.transparent,
+            collapsedBackgroundColor: Colors.transparent,
+            iconColor: Colors.white,
+            collapsedIconColor: Colors.white70,
+            children: [
+              if (_moves.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(16.0),
+                  child: Text(
+                    'No hay movimientos disponibles',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.white70,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black,
+                          blurRadius: 2,
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                Column(
+                  children: _moves.map((move) => _buildMoveCard(move)).toList(),
+                ),
+            ],
+          ),
         ],
       ),
     );
   }
 
   Widget _buildMoveCard(Move move) {
+    final moveType = _moveTypes[move.id];
+    final damageClass = _moveDamageClasses[move.id] ?? 'N/A';
+    final typeList = moveType != null ? <Type>[moveType] : <Type>[];
+    
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.2),
+      child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white.withOpacity(0.3)),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              move.name,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: Colors.white,
-                shadows: [
-                  Shadow(
-                    color: Colors.black,
-                    blurRadius: 2,
+        child: TypeStripeBackground(
+          types: typeList,
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.1),
+              border: Border.all(color: Colors.white.withOpacity(0.3)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Nombre del movimiento
+                Text(
+                  move.name,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                    shadows: [
+                      Shadow(
+                        color: Colors.black,
+                        blurRadius: 2,
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+                const SizedBox(height: 8),
+                // Información del movimiento
+                Row(
+                  children: [
+                    // Tipo
+                    if (moveType != null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          moveType.name,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    if (moveType != null) const SizedBox(width: 8),
+                    // Clase de daño
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        damageClass,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                // Estadísticas del movimiento
+                Wrap(
+                  spacing: 16,
+                  runSpacing: 8,
+                  children: [
+                    if (move.power != null)
+                      _buildMoveStat('Daño', move.power.toString()),
+                    if (move.accuracy != null)
+                      _buildMoveStat('Precisión', '${move.accuracy}%'),
+                    if (move.pp != null)
+                      _buildMoveStat('PP', move.pp.toString()),
+                    if (move.priority != null && move.priority != 0)
+                      _buildMoveStat('Prioridad', move.priority.toString()),
+                  ],
+                ),
+              ],
             ),
           ),
-        ],
+        ),
       ),
+    );
+  }
+
+  Widget _buildMoveStat(String label, String value) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '$label: ',
+          style: const TextStyle(
+            fontSize: 12,
+            color: Colors.white70,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 12,
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
     );
   }
 
@@ -1124,20 +1319,29 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
   }
 
   String? _getBestImageForPokemon(PokemonData pokemon) {
-    if (pokemon.artworkOfficialUrl != null && 
-        pokemon.artworkOfficialUrl!.toLowerCase().endsWith('.svg')) {
-      return pokemon.artworkOfficialUrl;
+    print('[PokemonDetailScreen] _getBestImageForPokemon para pokemon ${pokemon.name} (id: ${pokemon.id}):');
+    print('  - artworkOfficialPath: ${pokemon.artworkOfficialPath}');
+    print('  - spriteFrontDefaultPath: ${pokemon.spriteFrontDefaultPath}');
+    
+    if (pokemon.artworkOfficialPath != null && 
+        pokemon.artworkOfficialPath!.toLowerCase().endsWith('.svg')) {
+      print('[PokemonDetailScreen] Usando artworkOfficialPath (SVG): ${pokemon.artworkOfficialPath}');
+      return pokemon.artworkOfficialPath;
     }
-    if (pokemon.spriteFrontDefaultUrl != null && 
-        pokemon.spriteFrontDefaultUrl!.toLowerCase().endsWith('.svg')) {
-      return pokemon.spriteFrontDefaultUrl;
+    if (pokemon.spriteFrontDefaultPath != null && 
+        pokemon.spriteFrontDefaultPath!.toLowerCase().endsWith('.svg')) {
+      print('[PokemonDetailScreen] Usando spriteFrontDefaultPath (SVG): ${pokemon.spriteFrontDefaultPath}');
+      return pokemon.spriteFrontDefaultPath;
     }
-    if (pokemon.artworkOfficialUrl != null) {
-      return pokemon.artworkOfficialUrl;
+    if (pokemon.artworkOfficialPath != null) {
+      print('[PokemonDetailScreen] Usando artworkOfficialPath: ${pokemon.artworkOfficialPath}');
+      return pokemon.artworkOfficialPath;
     }
-    if (pokemon.spriteFrontDefaultUrl != null) {
-      return pokemon.spriteFrontDefaultUrl;
+    if (pokemon.spriteFrontDefaultPath != null) {
+      print('[PokemonDetailScreen] Usando spriteFrontDefaultPath: ${pokemon.spriteFrontDefaultPath}');
+      return pokemon.spriteFrontDefaultPath;
     }
+    print('[PokemonDetailScreen] ⚠️ No se encontró ninguna imagen válida para pokemon ${pokemon.name}');
     return null;
   }
 
@@ -1166,23 +1370,17 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
               Expanded(
                 child: Container(
                   width: double.infinity,
-                  child: imageUrl != null
-                      ? Image.network(
-                          imageUrl,
-                          fit: BoxFit.contain,
-                          errorBuilder: (context, error, stackTrace) {
-                            return const Icon(
-                              Icons.catching_pokemon,
-                              size: 40,
-                              color: Colors.white,
-                            );
-                          },
-                        )
-                      : const Icon(
-                          Icons.catching_pokemon,
-                          size: 40,
-                          color: Colors.white,
-                        ),
+                  child: PokemonImage(
+                    imagePath: imageUrl,
+                    fit: BoxFit.contain,
+                    width: 60,
+                    height: 60,
+                    errorWidget: const Icon(
+                      Icons.catching_pokemon,
+                      size: 40,
+                      color: Colors.white,
+                    ),
+                  ),
                 ),
               ),
               Container(

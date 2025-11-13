@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../database/app_database.dart';
 import '../services/config/app_config.dart';
-import '../services/download/download_service.dart';
+import '../services/backup/backup_processor.dart';
+import '../utils/loading_messages.dart';
 import 'regions_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -27,7 +28,7 @@ class _SplashScreenState extends State<SplashScreen>
   late List<AnimationController> _ballControllers;
   late List<String> _ballAssets;
   double _progress = 0.0;
-  String _statusText = 'Inicializando...';
+  String _statusText = '';
   bool _isDownloading = false;
   bool _downloadComplete = false;
 
@@ -36,6 +37,8 @@ class _SplashScreenState extends State<SplashScreen>
     super.initState();
     _loadBallAssets();
     _initializeAnimations();
+    // Inicializar texto con traducción
+    _statusText = LoadingMessages.getMessage('preparing', widget.appConfig.language);
     _checkAndDownload();
   }
 
@@ -79,28 +82,55 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _checkAndDownload() async {
-    // Verificar si ya hay datos descargados
-    final hasData = await _hasInitialData();
-    
-    if (!hasData) {
-      setState(() {
-        _isDownloading = true;
-        _statusText = 'Preparando descarga inicial...';
-      });
+    // Ejecutar verificación en un microtask para no bloquear la UI
+    await Future.microtask(() async {
+      // Verificar si la base de datos está vacía
+      final hasData = await _hasInitialData();
+      
+      if (!hasData) {
+        // Actualizar UI antes de iniciar carga pesada
+        if (mounted) {
+          setState(() {
+            _isDownloading = true;
+            _statusText = 'Cargando base de datos...';
+          });
+        }
 
-      // Iniciar descarga en segundo plano
-      await _downloadInitialData();
-    } else {
-      setState(() {
-        _statusText = 'Cargando aplicación...';
-        _progress = 1.0;
-      });
-    }
-
-    // Esperar un momento para mostrar la animación
-    await Future.delayed(const Duration(seconds: 1));
-
-    // Navegar a la pantalla de regiones
+        // Cargar datos desde assets (SQL + multimedia) en segundo plano
+        // Usar unawaited para no bloquear, pero manejar errores
+        _loadInitialData().then((_) {
+          // Navegar después de cargar
+          if (mounted) {
+            _navigateToRegions();
+          }
+        }).catchError((error) {
+          if (mounted) {
+            setState(() {
+              _statusText = 'Error: $error';
+            });
+          }
+        });
+      } else {
+        if (mounted) {
+          setState(() {
+            _statusText = 'Cargando aplicación...';
+            _progress = 1.0;
+          });
+        }
+        
+        // Esperar un momento para mostrar la animación
+        await Future.delayed(const Duration(seconds: 1));
+        
+        // Navegar a la pantalla de regiones
+        if (mounted) {
+          _navigateToRegions();
+        }
+      }
+    });
+  }
+  
+  /// Navegar a la pantalla de regiones
+  void _navigateToRegions() {
     if (mounted) {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
@@ -113,54 +143,71 @@ class _SplashScreenState extends State<SplashScreen>
     }
   }
 
+  /// Verificar si la base de datos está vacía de manera sencilla
+  /// Comprueba si hay al menos una región en la base de datos
   Future<bool> _hasInitialData() async {
     try {
       // Verificar si hay regiones en la base de datos
       final regions = await widget.database.regionDao.getAllRegions();
       return regions.isNotEmpty;
     } catch (e) {
+      // Si hay error, asumir que la DB está vacía
       return false;
     }
   }
 
-  Future<void> _downloadInitialData() async {
+  /// Cargar datos iniciales desde assets (SQL + multimedia)
+  /// Ejecutado en segundo plano para no bloquear la UI
+  Future<void> _loadInitialData() async {
     try {
-      final downloadService = DownloadService(
+      final backupProcessor = BackupProcessor(
         database: widget.database,
+        appConfig: widget.appConfig,
       );
 
-      await downloadService.downloadEssentialData(
-        onProgress: (progress) {
+      // Ejecutar en chunks con delays para permitir que la UI se actualice
+      await backupProcessor.processBackupFromAssets(
+        onProgress: (message, progress) {
+          // Usar scheduleMicrotask para asegurar que setState se ejecute en el hilo de UI
           if (mounted) {
-            setState(() {
-              _progress = progress.total > 0 
-                  ? progress.completed / progress.total 
-                  : 0.0;
-              // Mostrar mensaje más descriptivo si hay rate limiting
-              if (progress.currentEntity.contains('rate limit')) {
-                _statusText = 'Esperando... (demasiadas peticiones)';
-              } else {
-                _statusText = 'Descargando ${progress.currentEntity}... '
-                    '(${progress.completed}/${progress.total})';
+            scheduleMicrotask(() {
+              if (mounted) {
+                setState(() {
+                  _progress = progress;
+                  _statusText = message;
+                });
               }
             });
           }
         },
       );
       
+      // Actualizar estado final
       if (mounted) {
-        setState(() {
-          _downloadComplete = true;
-          _statusText = '¡Descarga completada!';
-          _progress = 1.0;
+        scheduleMicrotask(() {
+          if (mounted) {
+            setState(() {
+              _downloadComplete = true;
+              _statusText = '¡Carga completada!';
+              _progress = 1.0;
+            });
+          }
         });
+        
+        // Esperar un momento antes de navegar
+        await Future.delayed(const Duration(milliseconds: 500));
       }
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _statusText = 'Error: $e';
+        scheduleMicrotask(() {
+          if (mounted) {
+            setState(() {
+              _statusText = 'Error cargando datos: $e';
+            });
+          }
         });
       }
+      rethrow;
     }
   }
 

@@ -24,17 +24,7 @@ class Pokemon extends Table {
   TextColumn get typesJson => text().nullable()();
   TextColumn get criesJson => text().nullable()();
   
-  // URLs originales de multimedia (para poder reintentar descarga si falla)
-  TextColumn get spriteFrontDefaultUrl => text().nullable()();
-  TextColumn get spriteFrontShinyUrl => text().nullable()();
-  TextColumn get spriteBackDefaultUrl => text().nullable()();
-  TextColumn get spriteBackShinyUrl => text().nullable()();
-  TextColumn get artworkOfficialUrl => text().nullable()();
-  TextColumn get artworkOfficialShinyUrl => text().nullable()();
-  TextColumn get cryLatestUrl => text().nullable()();
-  TextColumn get cryLegacyUrl => text().nullable()();
-  
-  // Paths a archivos multimedia locales (después de descargar)
+  // Referencias a assets de Flutter (formato: assets/media/pokemon/1/sprite_front_default.png)
   TextColumn get spriteFrontDefaultPath => text().nullable()();
   TextColumn get spriteFrontShinyPath => text().nullable()();
   TextColumn get spriteBackDefaultPath => text().nullable()();
