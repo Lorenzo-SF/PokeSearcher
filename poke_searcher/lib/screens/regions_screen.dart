@@ -6,8 +6,10 @@ import '../database/daos/region_dao.dart';
 import '../database/daos/pokedex_dao.dart';
 import '../database/daos/pokemon_dao.dart';
 import '../services/download/download_service.dart';
+import '../utils/pokemon_image_helper.dart';
 import '../widgets/pokemon_image.dart';
 import 'pokemon_list_screen.dart';
+import 'types_list_screen.dart';
 import 'configuration_screen.dart';
 import '../utils/logger.dart';
 
@@ -45,6 +47,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
   Future<void> _loadRegions() async {
     try {
       final regionDao = RegionDao(widget.database);
+      final pokedexDao = PokedexDao(widget.database);
       final regions = await regionDao.getAllRegions();
       
       // Primero mostrar las regiones básicas (sin datos adicionales) para que la UI aparezca rápido
@@ -53,6 +56,17 @@ class _RegionsScreenState extends State<RegionsScreen> {
         name: r.name,
         pokedexCount: 0, // Se actualizará después
       )).toList();
+      
+      // Añadir Pokedex Nacional como región adicional
+      final nationalPokedex = await pokedexDao.getNationalPokedex();
+      if (nationalPokedex != null) {
+        final nationalEntries = await pokedexDao.getPokedexEntries(nationalPokedex.id);
+        regionsList.add(RegionData(
+          id: -1, // ID especial para pokedex nacional
+          name: 'Pokedex Nacional',
+          pokedexCount: nationalEntries.length,
+        ));
+      }
       
       setState(() {
         _regions = regionsList;
@@ -168,35 +182,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
   
   /// Obtener la mejor imagen disponible para un pokemon desde assets
   String? _getBestImagePath(PokemonData? pokemon) {
-    if (pokemon == null) {
-      print('[RegionsScreen] _getBestImagePath: pokemon es null');
-      return null;
-    }
-    
-    print('[RegionsScreen] _getBestImagePath para pokemon ${pokemon.name} (id: ${pokemon.id}):');
-    print('  - artworkOfficialPath: ${pokemon.artworkOfficialPath}');
-    print('  - spriteFrontDefaultPath: ${pokemon.spriteFrontDefaultPath}');
-    
-    // Prioridad: artwork oficial > sprite front default
-    if (pokemon.artworkOfficialPath != null && pokemon.artworkOfficialPath!.isNotEmpty) {
-      print('[RegionsScreen] Usando artworkOfficialPath: ${pokemon.artworkOfficialPath}');
-      return pokemon.artworkOfficialPath;
-    }
-    if (pokemon.artworkOfficialShinyPath != null && pokemon.artworkOfficialShinyPath!.isNotEmpty) {
-      print('[RegionsScreen] Usando artworkOfficialShinyPath: ${pokemon.artworkOfficialShinyPath}');
-      return pokemon.artworkOfficialShinyPath;
-    }
-    if (pokemon.spriteFrontDefaultPath != null && pokemon.spriteFrontDefaultPath!.isNotEmpty) {
-      print('[RegionsScreen] Usando spriteFrontDefaultPath: ${pokemon.spriteFrontDefaultPath}');
-      return pokemon.spriteFrontDefaultPath;
-    }
-    if (pokemon.spriteFrontShinyPath != null && pokemon.spriteFrontShinyPath!.isNotEmpty) {
-      print('[RegionsScreen] Usando spriteFrontShinyPath: ${pokemon.spriteFrontShinyPath}');
-      return pokemon.spriteFrontShinyPath;
-    }
-    
-    print('[RegionsScreen] ⚠️ No se encontró ninguna imagen válida para pokemon ${pokemon.name}');
-    return null;
+    return PokemonImageHelper.getBestImagePath(pokemon);
   }
 
   @override
@@ -212,6 +198,10 @@ class _RegionsScreenState extends State<RegionsScreen> {
   }
 
   String _getRegionImageName(String regionName) {
+    // Si es Pokedex Nacional, usar national.png
+    if (regionName.toLowerCase() == 'pokedex nacional') {
+      return 'assets/national.png';
+    }
     // Normalizar nombre de región para coincidir con assets
     final normalized = regionName.toLowerCase()
         .replaceAll(' ', '')
@@ -228,13 +218,15 @@ class _RegionsScreenState extends State<RegionsScreen> {
           builder: (context) => PokemonListScreen(
             database: widget.database,
             appConfig: widget.appConfig,
-            regionId: region.id,
+            regionId: region.id == -1 ? null : region.id, // null para pokedex nacional
             regionName: region.name,
           ),
         ),
       );
       // Refrescar el estado de la región cuando se vuelve de la navegación
-      await _refreshRegionStatus(region.id);
+      if (region.id != -1) {
+        await _refreshRegionStatus(region.id);
+      }
     }
   }
 
@@ -382,9 +374,9 @@ class _RegionsScreenState extends State<RegionsScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Nombre de la región
+                // Nombre de la región con número de pokémons entre paréntesis
                 Text(
-                  region.name,
+                  '${region.name} (${region.pokedexCount ?? 0})',
                   style: const TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.bold,
@@ -398,7 +390,7 @@ class _RegionsScreenState extends State<RegionsScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                // 3 imágenes de pokemon iniciales
+                // 3 imágenes de pokemon iniciales (agrandadas)
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: List.generate(3, (i) {
@@ -407,9 +399,9 @@ class _RegionsScreenState extends State<RegionsScreen> {
                     final imagePath = _getBestImagePath(pokemon);
                     
                     return Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 6),
-                      width: 50,
-                      height: 50,
+                      margin: const EdgeInsets.symmetric(horizontal: 8),
+                      width: 80,
+                      height: 80,
                       decoration: BoxDecoration(
                         color: Colors.white.withOpacity(0.3),
                         borderRadius: BorderRadius.circular(10),
@@ -422,38 +414,18 @@ class _RegionsScreenState extends State<RegionsScreen> {
                         borderRadius: BorderRadius.circular(9),
                         child: PokemonImage(
                           imagePath: imagePath,
-                          width: 60,
-                          height: 60,
+                          width: 100,
+                          height: 100,
                           fit: BoxFit.contain,
                           errorWidget: const Icon(
                             Icons.catching_pokemon,
                             color: Colors.white,
-                            size: 40,
+                            size: 50,
                           ),
                         ),
                       ),
                     );
                   }),
-                ),
-                const SizedBox(height: 16),
-                // Contador de pokedex
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFDC143C).withOpacity(0.8),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    '${region.pokedexCount ?? 0} Pokémon',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
                 ),
                 const SizedBox(height: 16),
                 // Botón de acción (usa el estado en memoria para actualización inmediata)
@@ -533,7 +505,14 @@ class _RegionsScreenState extends State<RegionsScreen> {
             title: const Text('Tipos'),
             onTap: () {
               Navigator.pop(context);
-              // TODO: Navegar a tipos
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => TypesListScreen(
+                    database: widget.database,
+                    appConfig: widget.appConfig,
+                  ),
+                ),
+              );
             },
           ),
           ListTile(

@@ -152,5 +152,47 @@ class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
     final uniquePokemon = await getUniquePokemonByRegion(regionId);
     return uniquePokemon.length;
   }
+  
+  /// Obtener la pokedex nacional (sin región)
+  Future<PokedexData?> getNationalPokedex() async {
+    return await (select(pokedex)
+      ..where((t) => t.regionId.isNull()))
+      .getSingleOrNull();
+  }
+  
+  /// Obtener todas las pokedex de una región ordenadas por tamaño (mayor a menor)
+  Future<List<PokedexData>> getPokedexByRegionOrderedBySize(int regionId) async {
+    final pokedexList = await getPokedexByRegion(regionId);
+    
+    // Obtener el tamaño de cada pokedex
+    final List<Map<String, dynamic>> pokedexWithSize = [];
+    for (final pokedex in pokedexList) {
+      final entries = await getPokedexEntries(pokedex.id);
+      pokedexWithSize.add({
+        'pokedex': pokedex,
+        'size': entries.length,
+      });
+    }
+    
+    // Ordenar por tamaño (mayor a menor)
+    pokedexWithSize.sort((a, b) => (b['size'] as int).compareTo(a['size'] as int));
+    
+    return pokedexWithSize.map((item) => item['pokedex'] as PokedexData).toList();
+  }
+  
+  /// Obtener el número de entrada de un pokemon en una pokedex específica
+  Future<int?> getEntryNumberForPokemon(int pokedexId, int speciesId) async {
+    final entry = await (select(pokedexEntries)
+      ..where((t) => t.pokedexId.equals(pokedexId) & t.pokemonSpeciesId.equals(speciesId)))
+      .getSingleOrNull();
+    return entry?.entryNumber;
+  }
+  
+  /// Obtener el número de entrada de un pokemon en la pokedex nacional
+  Future<int?> getNationalEntryNumber(int speciesId) async {
+    final nationalPokedex = await getNationalPokedex();
+    if (nationalPokedex == null) return null;
+    return await getEntryNumberForPokemon(nationalPokedex.id, speciesId);
+  }
 }
 

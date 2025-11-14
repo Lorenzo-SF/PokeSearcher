@@ -5,6 +5,7 @@ import '../services/config/app_config.dart';
 import '../database/daos/pokedex_dao.dart';
 import '../database/daos/pokemon_dao.dart';
 import '../utils/color_generator.dart';
+import '../utils/pokemon_image_helper.dart';
 import '../widgets/type_stripe_background.dart';
 import '../widgets/pokemon_image.dart';
 import 'pokemon_detail_screen.dart';
@@ -12,14 +13,14 @@ import 'pokemon_detail_screen.dart';
 class PokemonListScreen extends StatefulWidget {
   final AppDatabase database;
   final AppConfig appConfig;
-  final int regionId;
+  final int? regionId; // nullable para pokedex nacional
   final String regionName;
 
   const PokemonListScreen({
     super.key,
     required this.database,
     required this.appConfig,
-    required this.regionId,
+    this.regionId, // nullable para pokedex nacional
     required this.regionName,
   });
 
@@ -42,18 +43,69 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
       final pokedexDao = PokedexDao(widget.database);
       final pokemonDao = PokemonDao(widget.database);
       
-      // Obtener pokemons únicos de la región
-      final uniquePokemon = await pokedexDao.getUniquePokemonByRegion(widget.regionId);
+      List<PokedexData> pokedexList;
+      Map<int, Map<String, dynamic>> uniquePokemon;
+      
+      if (widget.regionId == null) {
+        // Pokedex Nacional: usar solo la pokedex nacional
+        final nationalPokedex = await pokedexDao.getNationalPokedex();
+        if (nationalPokedex == null) {
+          setState(() {
+            _isLoading = false;
+          });
+          return;
+        }
+        pokedexList = [nationalPokedex];
+        
+        // Obtener todas las entradas de la pokedex nacional
+        final entries = await pokedexDao.getPokedexEntries(nationalPokedex.id);
+        uniquePokemon = {};
+        for (final entry in entries) {
+          final species = await (widget.database.select(widget.database.pokemonSpecies)
+            ..where((t) => t.id.equals(entry.pokemonSpeciesId)))
+            .getSingleOrNull();
+          if (species != null && !uniquePokemon.containsKey(species.id)) {
+            uniquePokemon[species.id] = {
+              'species': species,
+              'pokedexNumbers': [{
+                'pokedexId': nationalPokedex.id,
+                'pokedexApiId': nationalPokedex.apiId,
+                'entryNumber': entry.entryNumber,
+                'color': nationalPokedex.color,
+              }],
+            };
+          }
+        }
+      } else {
+        // Región normal: obtener todas las pokedex de la región ordenadas por tamaño (mayor a menor)
+        pokedexList = await pokedexDao.getPokedexByRegionOrderedBySize(widget.regionId!);
+        
+        // Obtener pokemons únicos de la región
+        uniquePokemon = await pokedexDao.getUniquePokemonByRegion(widget.regionId!);
+      }
       
       final List<Map<String, dynamic>> pokemonList = [];
       
       for (final entry in uniquePokemon.values) {
         final species = entry['species'] as PokemonSpecy;
-        // Convertir List<dynamic> a List<Map<String, dynamic>>
-        final pokedexNumbersRaw = entry['pokedexNumbers'] as List;
-        final pokedexNumbers = pokedexNumbersRaw
-            .map((item) => item as Map<String, dynamic>)
-            .toList();
+        
+        // Implementar coalesce: buscar número de entrada en pokedex ordenadas por tamaño
+        int? orderNumber;
+        PokedexData? usedPokedex;
+        
+        for (final pokedex in pokedexList) {
+          final entryNumber = await pokedexDao.getEntryNumberForPokemon(pokedex.id, species.id);
+          if (entryNumber != null) {
+            orderNumber = entryNumber;
+            usedPokedex = pokedex;
+            break; // Usar el primero encontrado (pokedex más grande)
+          }
+        }
+        
+        // Si no se encontró en ninguna pokedex de la región, usar 0 como fallback
+        if (orderNumber == null) {
+          orderNumber = 0;
+        }
         
         // Obtener el pokemon principal de esta especie (el primero)
         final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
@@ -68,20 +120,17 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
         pokemonList.add({
           'species': species,
           'pokemon': pokemon,
-          'pokedexNumbers': pokedexNumbers,
+          'orderNumber': orderNumber,
+          'usedPokedex': usedPokedex,
           'types': types,
         });
       }
       
-      // Ordenar por el primer número de pokedex
+      // Ordenar por el número de orden (coalesce)
       pokemonList.sort((a, b) {
-        final aNumbers = a['pokedexNumbers'] as List<Map<String, dynamic>>;
-        final bNumbers = b['pokedexNumbers'] as List<Map<String, dynamic>>;
-        if (aNumbers.isEmpty) return 1;
-        if (bNumbers.isEmpty) return -1;
-        final aFirst = aNumbers.first['entryNumber'] as int;
-        final bFirst = bNumbers.first['entryNumber'] as int;
-        return aFirst.compareTo(bFirst);
+        final aNumber = a['orderNumber'] as int;
+        final bNumber = b['orderNumber'] as int;
+        return aNumber.compareTo(bNumber);
       });
       
       setState(() {
@@ -105,83 +154,9 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
 
   /// Obtener la mejor imagen disponible desde assets (SVG preferido)
   String? _getBestImagePath(PokemonData? pokemon) {
-    if (pokemon == null) {
-      print('[PokemonListScreen] _getBestImagePath: pokemon es null');
-      return null;
-    }
-    
-    print('[PokemonListScreen] _getBestImagePath para pokemon ${pokemon.name} (id: ${pokemon.id}):');
-    print('  - artworkOfficialPath: ${pokemon.artworkOfficialPath}');
-    print('  - artworkOfficialShinyPath: ${pokemon.artworkOfficialShinyPath}');
-    print('  - spriteFrontDefaultPath: ${pokemon.spriteFrontDefaultPath}');
-    print('  - spriteFrontShinyPath: ${pokemon.spriteFrontShinyPath}');
-    
-    // Prioridad: SVG primero (igual que en regiones)
-    if (pokemon.artworkOfficialPath != null && 
-        pokemon.artworkOfficialPath!.isNotEmpty &&
-        pokemon.artworkOfficialPath!.toLowerCase().endsWith('.svg')) {
-      print('[PokemonListScreen] Usando artworkOfficialPath (SVG): ${pokemon.artworkOfficialPath}');
-      return pokemon.artworkOfficialPath;
-    }
-    if (pokemon.artworkOfficialShinyPath != null && 
-        pokemon.artworkOfficialShinyPath!.isNotEmpty &&
-        pokemon.artworkOfficialShinyPath!.toLowerCase().endsWith('.svg')) {
-      return pokemon.artworkOfficialShinyPath;
-    }
-    if (pokemon.spriteFrontDefaultPath != null && 
-        pokemon.spriteFrontDefaultPath!.isNotEmpty &&
-        pokemon.spriteFrontDefaultPath!.toLowerCase().endsWith('.svg')) {
-      return pokemon.spriteFrontDefaultPath;
-    }
-    if (pokemon.spriteFrontShinyPath != null && 
-        pokemon.spriteFrontShinyPath!.isNotEmpty &&
-        pokemon.spriteFrontShinyPath!.toLowerCase().endsWith('.svg')) {
-      return pokemon.spriteFrontShinyPath;
-    }
-    
-    // Si no hay SVG, usar artwork oficial (PNG)
-    if (pokemon.artworkOfficialPath != null && pokemon.artworkOfficialPath!.isNotEmpty) {
-      return pokemon.artworkOfficialPath;
-    }
-    if (pokemon.artworkOfficialShinyPath != null && pokemon.artworkOfficialShinyPath!.isNotEmpty) {
-      return pokemon.artworkOfficialShinyPath;
-    }
-    if (pokemon.spriteFrontDefaultPath != null && pokemon.spriteFrontDefaultPath!.isNotEmpty) {
-      print('[PokemonListScreen] Usando spriteFrontDefaultPath: ${pokemon.spriteFrontDefaultPath}');
-      return pokemon.spriteFrontDefaultPath;
-    }
-    if (pokemon.spriteFrontShinyPath != null && pokemon.spriteFrontShinyPath!.isNotEmpty) {
-      print('[PokemonListScreen] Usando spriteFrontShinyPath: ${pokemon.spriteFrontShinyPath}');
-      return pokemon.spriteFrontShinyPath;
-    }
-    
-    print('[PokemonListScreen] ⚠️ No se encontró ninguna imagen válida para pokemon ${pokemon.name}');
-    return null;
+    return PokemonImageHelper.getBestImagePath(pokemon);
   }
 
-  /// Formatear números de pokedex (separados por "/")
-  /// Aplica distinct para evitar mostrar números duplicados
-  String _formatPokedexNumbers(List<Map<String, dynamic>> pokedexNumbers) {
-    if (pokedexNumbers.isEmpty) return '';
-    
-    // Obtener números únicos (distinct)
-    final uniqueNumbers = <int>{};
-    for (final n in pokedexNumbers) {
-      final entryNumber = n['entryNumber'] as int?;
-      if (entryNumber != null) {
-        uniqueNumbers.add(entryNumber);
-      }
-    }
-    
-    if (uniqueNumbers.isEmpty) return '';
-    if (uniqueNumbers.length == 1) {
-      return '${uniqueNumbers.first}';
-    }
-    
-    // Múltiples números únicos: "nº1 / nº2 / ..." (ordenados)
-    final sortedNumbers = uniqueNumbers.toList()..sort();
-    return sortedNumbers.join(' / ');
-  }
 
   /// Obtener colores de los tipos del pokemon
   List<Color> _getTypeColors(List<Type> types) {
@@ -272,7 +247,8 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                     final item = _pokemonList[index];
                     final species = item['species'] as PokemonSpecy;
                     final pokemon = item['pokemon'] as PokemonData?;
-                    final pokedexNumbers = item['pokedexNumbers'] as List<Map<String, dynamic>>;
+                    final orderNumber = item['orderNumber'] as int;
+                    final usedPokedex = item['usedPokedex'] as PokedexData?;
                     final types = item['types'] as List<Type>;
                     final colors = _getTypeColors(types);
                     
@@ -286,6 +262,8 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                               pokemonId: pokemon.id,
                               regionId: widget.regionId,
                               regionName: widget.regionName,
+                              pokedexId: usedPokedex?.id,
+                              pokedexName: usedPokedex?.name,
                             ),
                           ),
                         );
@@ -293,7 +271,8 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                       child: _buildPokemonCard(
                         species: species,
                         pokemon: pokemon,
-                        pokedexNumbers: pokedexNumbers,
+                        orderNumber: orderNumber,
+                        usedPokedex: usedPokedex,
                         colors: colors,
                         types: types,
                       ),
@@ -333,12 +312,13 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
   Widget _buildPokemonCard({
     required PokemonSpecy species,
     required PokemonData? pokemon,
-    required List<Map<String, dynamic>> pokedexNumbers,
+    required int orderNumber,
+    required PokedexData? usedPokedex,
     required List<Color> colors,
     required List<Type> types,
   }) {
     final imagePath = _getBestImagePath(pokemon);
-    final numbersText = _formatPokedexNumbers(pokedexNumbers);
+    final pokedexName = usedPokedex?.name ?? '';
     
     return Container(
       decoration: BoxDecoration(
@@ -361,6 +341,25 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
+                  // Número de orden y nombre de pokedex en la parte superior
+                  Text(
+                    '$orderNumber${pokedexName.isNotEmpty ? ' ($pokedexName)' : ''}',
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black,
+                          blurRadius: 2,
+                        ),
+                      ],
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
                   // Imagen del pokemon (SVG preferido) desde assets
                   Expanded(
                     child: Container(
@@ -387,29 +386,10 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  // Números de pokedex (separados por "/")
-                  Text(
-                    numbersText,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                      shadows: [
-                        Shadow(
-                          color: Colors.black,
-                          blurRadius: 2,
-                        ),
-                      ],
-                    ),
-                    textAlign: TextAlign.center,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
                   const SizedBox(height: 4),
-                  // Nombre del pokemon con formato "nombre #numero"
+                  // Nombre del pokemon
                   Text(
-                    '${species.name} #$numbersText',
+                    species.name,
                     style: const TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.bold,

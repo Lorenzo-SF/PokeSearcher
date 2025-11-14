@@ -39,6 +39,90 @@ class TypeDao extends DatabaseAccessor<AppDatabase> with _$TypeDaoMixin {
       .get();
   }
   
+  /// Obtener tipos que reciben doble daño de este tipo (super efectivo)
+  Future<List<Type>> getDoubleDamageTo(int typeId) async {
+    final relations = await (select(typeDamageRelations)
+      ..where((t) => 
+        t.attackingTypeId.equals(typeId) &
+        t.relationType.equals('double_damage_to')))
+      .get();
+    
+    if (relations.isEmpty) return [];
+    
+    final defendingTypeIds = relations.map((r) => r.defendingTypeId).toList();
+    return await (select(types)..where((t) => t.id.isIn(defendingTypeIds))).get();
+  }
+  
+  /// Obtener tipos que reciben medio daño de este tipo (no muy efectivo)
+  Future<List<Type>> getHalfDamageTo(int typeId) async {
+    final relations = await (select(typeDamageRelations)
+      ..where((t) => 
+        t.attackingTypeId.equals(typeId) &
+        t.relationType.equals('half_damage_to')))
+      .get();
+    
+    if (relations.isEmpty) return [];
+    
+    final defendingTypeIds = relations.map((r) => r.defendingTypeId).toList();
+    return await (select(types)..where((t) => t.id.isIn(defendingTypeIds))).get();
+  }
+  
+  /// Obtener tipos que no reciben daño de este tipo (sin efecto)
+  Future<List<Type>> getNoDamageTo(int typeId) async {
+    final relations = await (select(typeDamageRelations)
+      ..where((t) => 
+        t.attackingTypeId.equals(typeId) &
+        t.relationType.equals('no_damage_to')))
+      .get();
+    
+    if (relations.isEmpty) return [];
+    
+    final defendingTypeIds = relations.map((r) => r.defendingTypeId).toList();
+    return await (select(types)..where((t) => t.id.isIn(defendingTypeIds))).get();
+  }
+  
+  /// Obtener tipos que hacen doble daño a este tipo (débil contra)
+  Future<List<Type>> getDoubleDamageFrom(int typeId) async {
+    final relations = await (select(typeDamageRelations)
+      ..where((t) => 
+        t.defendingTypeId.equals(typeId) &
+        t.relationType.equals('double_damage_from')))
+      .get();
+    
+    if (relations.isEmpty) return [];
+    
+    final attackingTypeIds = relations.map((r) => r.attackingTypeId).toList();
+    return await (select(types)..where((t) => t.id.isIn(attackingTypeIds))).get();
+  }
+  
+  /// Obtener tipos que hacen medio daño a este tipo (resistente a)
+  Future<List<Type>> getHalfDamageFrom(int typeId) async {
+    final relations = await (select(typeDamageRelations)
+      ..where((t) => 
+        t.defendingTypeId.equals(typeId) &
+        t.relationType.equals('half_damage_from')))
+      .get();
+    
+    if (relations.isEmpty) return [];
+    
+    final attackingTypeIds = relations.map((r) => r.attackingTypeId).toList();
+    return await (select(types)..where((t) => t.id.isIn(attackingTypeIds))).get();
+  }
+  
+  /// Obtener tipos que no hacen daño a este tipo (inmune a)
+  Future<List<Type>> getNoDamageFrom(int typeId) async {
+    final relations = await (select(typeDamageRelations)
+      ..where((t) => 
+        t.defendingTypeId.equals(typeId) &
+        t.relationType.equals('no_damage_from')))
+      .get();
+    
+    if (relations.isEmpty) return [];
+    
+    final attackingTypeIds = relations.map((r) => r.attackingTypeId).toList();
+    return await (select(types)..where((t) => t.id.isIn(attackingTypeIds))).get();
+  }
+  
   /// Obtener efectividad de un tipo contra otro
   Future<double> getEffectiveness({
     required int attackingTypeId,

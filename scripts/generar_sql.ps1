@@ -207,6 +207,12 @@ function Get-DownloadedFilePath($url, $dataDir, $pokemonApiId) {
         if ([string]::IsNullOrWhiteSpace($ext)) {
             $ext = [System.IO.Path]::GetExtension($fileName).TrimStart('.')
         }
+        if ([string]::IsNullOrWhiteSpace($ext)) {
+            # Intentar inferir extensión desde la URL
+            if ($url -match '\.(svg|png|jpg|jpeg|ogg|mp3|webp)') {
+                $ext = $matches[1]
+            }
+        }
         
         # Extraer el ID del pokemon de la URL o usar el proporcionado
         $pokemonId = $pokemonApiId
@@ -217,56 +223,103 @@ function Get-DownloadedFilePath($url, $dataDir, $pokemonApiId) {
         if ($null -ne $pokemonId) {
             $pokemonDir = Join-Path $dataDir "pokemon\$pokemonId"
             if (Test-Path $pokemonDir) {
-                # Primero intentar encontrar el archivo por el nombre exacto de la URL
-                $filePath = Join-Path $pokemonDir $fileName
-                if (Test-Path $filePath) {
-                    return $filePath
-                }
-                
-                # Si no se encuentra, buscar archivos con nombres genéricos basados en el ID
-                # Los archivos descargados pueden tener nombres como: 1.svg, 1.png, 1.ogg, etc.
-                $genericNames = @(
-                    "$pokemonId.$ext",
-                    "$pokemonId.$ext".ToLower(),
-                    "$pokemonId.$ext".ToUpper()
-                )
-                
-                foreach ($genericName in $genericNames) {
-                    $filePath = Join-Path $pokemonDir $genericName
+                # Estrategia 1: Buscar por nombre exacto de la URL
+                if (-not [string]::IsNullOrWhiteSpace($fileName) -and $fileName -ne '/') {
+                    $filePath = Join-Path $pokemonDir $fileName
                     if (Test-Path $filePath) {
                         return $filePath
                     }
                 }
                 
-                # Si aún no se encuentra, buscar cualquier archivo con la extensión correcta
-                # pero priorizar archivos con nombres que contengan el ID
-                $allFiles = Get-ChildItem -Path $pokemonDir -File -ErrorAction SilentlyContinue | Where-Object {
-                    $_.Extension -eq ".$ext" -or $_.Extension -eq ".$($ext.ToLower())" -or $_.Extension -eq ".$($ext.ToUpper())"
+                # Estrategia 2: Buscar archivos con nombres genéricos basados en el ID
+                # Los archivos descargados pueden tener nombres como: 1.svg, 1.png, 1.ogg, etc.
+                if (-not [string]::IsNullOrWhiteSpace($ext)) {
+                    $genericNames = @(
+                        "$pokemonId.$ext",
+                        "$pokemonId.$ext".ToLower(),
+                        "$pokemonId.$ext".ToUpper()
+                    )
+                    
+                    foreach ($genericName in $genericNames) {
+                        $filePath = Join-Path $pokemonDir $genericName
+                        if (Test-Path $filePath) {
+                            return $filePath
+                        }
+                    }
                 }
                 
+                # Estrategia 3: Buscar archivos por tipo y extensión basándose en la URL
+                # Identificar el tipo de archivo desde la URL
+                $urlLower = $url.ToLower()
+                $isDreamWorld = $urlLower -match 'dream-world'
+                $isOfficialArtwork = $urlLower -match 'official-artwork'
+                $isHome = $urlLower -match 'home'
+                $isShiny = $urlLower -match 'shiny'
+                $isCry = $urlLower -match 'cries'
+                
+                # Buscar archivos que coincidan con el tipo
+                $allFiles = Get-ChildItem -Path $pokemonDir -File -ErrorAction SilentlyContinue
+                
                 if ($allFiles.Count -gt 0) {
-                    # Priorizar archivos que contengan el ID en el nombre
-                    $preferredFile = $allFiles | Where-Object { $_.Name -match "^$pokemonId\." } | Select-Object -First 1
-                    if ($null -ne $preferredFile) {
-                        return $preferredFile.FullName
+                    # Filtrar por extensión si está disponible
+                    if (-not [string]::IsNullOrWhiteSpace($ext)) {
+                        $matchingExtFiles = $allFiles | Where-Object {
+                            $_.Extension -eq ".$ext" -or 
+                            $_.Extension -eq ".$($ext.ToLower())" -or 
+                            $_.Extension -eq ".$($ext.ToUpper())"
+                        }
+                        
+                        if ($matchingExtFiles.Count -gt 0) {
+                            # Priorizar archivos que contengan el ID en el nombre
+                            $preferredFile = $matchingExtFiles | Where-Object { 
+                                $_.Name -match "^$pokemonId\." 
+                            } | Select-Object -First 1
+                            
+                            if ($null -ne $preferredFile) {
+                                return $preferredFile.FullName
+                            }
+                            
+                            # Si no hay ninguno con el ID, usar el primero encontrado
+                            return $matchingExtFiles[0].FullName
+                        }
                     }
-                    # Si no hay ninguno con el ID, usar el primero encontrado
-                    return $allFiles[0].FullName
+                    
+                    # Si no hay coincidencia por extensión, buscar cualquier archivo con extensión de imagen/sonido
+                    $mediaExtensions = @('.svg', '.png', '.jpg', '.jpeg', '.ogg', '.mp3', '.webp')
+                    $mediaFiles = $allFiles | Where-Object {
+                        $mediaExtensions -contains $_.Extension.ToLower()
+                    }
+                    
+                    if ($mediaFiles.Count -gt 0) {
+                        # Priorizar archivos que contengan el ID
+                        $preferredFile = $mediaFiles | Where-Object { 
+                            $_.Name -match "^$pokemonId\." 
+                        } | Select-Object -First 1
+                        
+                        if ($null -ne $preferredFile) {
+                            return $preferredFile.FullName
+                        }
+                        
+                        # Usar el primero encontrado
+                        return $mediaFiles[0].FullName
+                    }
                 }
             }
         }
         
-        # Buscar recursivamente en todos los directorios de pokemon (fallback)
+        # Estrategia 4: Buscar recursivamente en todos los directorios de pokemon (fallback)
         $pokemonDirs = Get-ChildItem -Path (Join-Path $dataDir "pokemon") -Directory -ErrorAction SilentlyContinue
         foreach ($pokemonDir in $pokemonDirs) {
-            $filePath = Join-Path $pokemonDir.FullName $fileName
-            if (Test-Path $filePath) {
-                return $filePath
+            if (-not [string]::IsNullOrWhiteSpace($fileName) -and $fileName -ne '/') {
+                $filePath = Join-Path $pokemonDir.FullName $fileName
+                if (Test-Path $filePath) {
+                    return $filePath
+                }
             }
         }
     }
     catch {
-        # Ignorar errores
+        Write-Warning "Error en Get-DownloadedFilePath para URL: $url -> $_"
     }
     
     return $null
@@ -328,28 +381,133 @@ function Process-PokemonMedia($pokemonApiId, $pokemonData, $dataDir, $mediaDir) 
         }
     }
     
-    # Procesar sprites - usar las URLs directamente desde los datos
+    # Procesar sprites - usar la misma lógica de priorización que descargar_pokeapi.ps1
+    # Prioridad: SVG dream-world > PNG official-artwork > PNG home
     if ($pokemonData.sprites) {
         $sprites = $pokemonData.sprites
         
-        # front_default - priorizar dream_world (SVG), luego front_default (PNG)
+        # ============================================
+        # IMAGEN NORMAL (spriteFrontDefaultPath): Priorizar SVG, luego PNG de mayor resolución
+        # ============================================
+        $normalUrl = $null
+        $normalExt = $null
+        
+        # 1. Intentar SVG desde dream-world (prioridad máxima)
         if ($sprites.other.dream_world.front_default) {
-            if (Copy-MediaFromUrl $sprites.other.dream_world.front_default "sprite_front_default.svg" $pokemonApiId $dataDir $pokemonMediaDir) {
-                $mediaPaths.spriteFrontDefaultPath = Get-AssetPath "media/pokemon/$pokemonApiId/sprite_front_default.svg"
-            }
-        } elseif ($sprites.front_default) {
-            if (Copy-MediaFromUrl $sprites.front_default "sprite_front_default.png" $pokemonApiId $dataDir $pokemonMediaDir) {
-                $mediaPaths.spriteFrontDefaultPath = Get-AssetPath "media/pokemon/$pokemonApiId/sprite_front_default.png"
+            $dreamWorldUrl = $sprites.other.dream_world.front_default
+            if ($null -ne $dreamWorldUrl -and $dreamWorldUrl.ToLower().EndsWith('.svg')) {
+                $normalUrl = $dreamWorldUrl
+                $normalExt = "svg"
             }
         }
         
-        # front_shiny
-        if ($sprites.front_shiny) {
-            if (Copy-MediaFromUrl $sprites.front_shiny "sprite_front_shiny.png" $pokemonApiId $dataDir $pokemonMediaDir) {
-                $mediaPaths.spriteFrontShinyPath = Get-AssetPath "media/pokemon/$pokemonApiId/sprite_front_shiny.png"
+        # 2. Si no hay SVG, usar PNG de official-artwork (mayor resolución que home)
+        if ($null -eq $normalUrl -and $sprites.other.'official-artwork'.front_default) {
+            $officialDefault = $sprites.other.'official-artwork'.front_default
+            if ($null -ne $officialDefault -and $officialDefault.ToLower().EndsWith('.png')) {
+                $normalUrl = $officialDefault
+                $normalExt = "png"
             }
         }
         
+        # 3. Si aún no hay, usar PNG de home (fallback)
+        if ($null -eq $normalUrl -and $sprites.other.home.front_default) {
+            $homeDefault = $sprites.other.home.front_default
+            if ($null -ne $homeDefault -and $homeDefault.ToLower().EndsWith('.png')) {
+                $normalUrl = $homeDefault
+                $normalExt = "png"
+            }
+        }
+        
+        # 4. Último fallback: front_default directo
+        if ($null -eq $normalUrl -and $sprites.front_default) {
+            $normalUrl = $sprites.front_default
+            $normalExt = "png"
+        }
+        
+        # Copiar imagen normal encontrada
+        if ($null -ne $normalUrl) {
+            $destFileName = "sprite_front_default.$normalExt"
+            if (Copy-MediaFromUrl $normalUrl $destFileName $pokemonApiId $dataDir $pokemonMediaDir) {
+                $mediaPaths.spriteFrontDefaultPath = Get-AssetPath "media/pokemon/$pokemonApiId/$destFileName"
+            }
+        }
+        
+        # ============================================
+        # IMAGEN SHINY (spriteFrontShinyPath): Priorizar SVG, luego PNG de mayor resolución
+        # ============================================
+        $shinyUrl = $null
+        $shinyExt = $null
+        
+        # 1. Buscar SVG shiny (poco probable que exista)
+        if ($sprites.other.home.front_shiny) {
+            $homeShinySvg = $sprites.other.home.front_shiny
+            if ($null -ne $homeShinySvg -and $homeShinySvg.ToLower().EndsWith('.svg')) {
+                $shinyUrl = $homeShinySvg
+                $shinyExt = "svg"
+            }
+        }
+        
+        # 2. Si no hay SVG shiny, usar PNG de official-artwork (mayor resolución)
+        if ($null -eq $shinyUrl -and $sprites.other.'official-artwork'.front_shiny) {
+            $officialShiny = $sprites.other.'official-artwork'.front_shiny
+            if ($null -ne $officialShiny -and $officialShiny.ToLower().EndsWith('.png')) {
+                $shinyUrl = $officialShiny
+                $shinyExt = "png"
+            }
+        }
+        
+        # 3. Si aún no hay, usar PNG shiny de home (fallback)
+        if ($null -eq $shinyUrl -and $sprites.other.home.front_shiny) {
+            $homeShiny = $sprites.other.home.front_shiny
+            if ($null -ne $homeShiny -and $homeShiny.ToLower().EndsWith('.png')) {
+                $shinyUrl = $homeShiny
+                $shinyExt = "png"
+            }
+        }
+        
+        # 4. Último fallback: front_shiny directo
+        if ($null -eq $shinyUrl -and $sprites.front_shiny) {
+            $shinyUrl = $sprites.front_shiny
+            $shinyExt = "png"
+        }
+        
+        # Copiar imagen shiny encontrada
+        if ($null -ne $shinyUrl) {
+            $destFileName = "sprite_front_shiny.$shinyExt"
+            if (Copy-MediaFromUrl $shinyUrl $destFileName $pokemonApiId $dataDir $pokemonMediaDir) {
+                $mediaPaths.spriteFrontShinyPath = Get-AssetPath "media/pokemon/$pokemonApiId/$destFileName"
+            }
+        }
+        
+        # ============================================
+        # ARTWORK OFICIAL (artworkOfficialPath): Para uso en PokemonImageHelper
+        # ============================================
+        # Guardar el mismo archivo que spriteFrontDefaultPath pero con nombre artwork_official
+        # Esto permite que PokemonImageHelper lo encuentre como artworkOfficialPath
+        if ($null -ne $normalUrl) {
+            $artworkExt = $normalExt
+            $artworkFileName = "artwork_official.$artworkExt"
+            if (Copy-MediaFromUrl $normalUrl $artworkFileName $pokemonApiId $dataDir $pokemonMediaDir) {
+                $mediaPaths.artworkOfficialPath = Get-AssetPath "media/pokemon/$pokemonApiId/$artworkFileName"
+            }
+        }
+        
+        # ============================================
+        # ARTWORK OFICIAL SHINY (artworkOfficialShinyPath): Para uso en PokemonImageHelper
+        # ============================================
+        # Guardar el mismo archivo que spriteFrontShinyPath pero con nombre artwork_official_shiny
+        if ($null -ne $shinyUrl) {
+            $artworkShinyExt = $shinyExt
+            $artworkShinyFileName = "artwork_official_shiny.$artworkShinyExt"
+            if (Copy-MediaFromUrl $shinyUrl $artworkShinyFileName $pokemonApiId $dataDir $pokemonMediaDir) {
+                $mediaPaths.artworkOfficialShinyPath = Get-AssetPath "media/pokemon/$pokemonApiId/$artworkShinyFileName"
+            }
+        }
+        
+        # ============================================
+        # SPRITES BACK (opcionales, para compatibilidad)
+        # ============================================
         # back_default
         if ($sprites.back_default) {
             if (Copy-MediaFromUrl $sprites.back_default "sprite_back_default.png" $pokemonApiId $dataDir $pokemonMediaDir) {
@@ -361,32 +519,6 @@ function Process-PokemonMedia($pokemonApiId, $pokemonData, $dataDir, $mediaDir) 
         if ($sprites.back_shiny) {
             if (Copy-MediaFromUrl $sprites.back_shiny "sprite_back_shiny.png" $pokemonApiId $dataDir $pokemonMediaDir) {
                 $mediaPaths.spriteBackShinyPath = Get-AssetPath "media/pokemon/$pokemonApiId/sprite_back_shiny.png"
-            }
-        }
-        
-        # official-artwork front_default - priorizar SVG si está disponible
-        if ($sprites.other.'official-artwork'.front_default) {
-            $officialUrl = $sprites.other.'official-artwork'.front_default
-            $ext = [System.IO.Path]::GetExtension($officialUrl).TrimStart('.')
-            if ([string]::IsNullOrWhiteSpace($ext)) {
-                $ext = "png"
-            }
-            $fileName = "artwork_official.$ext"
-            if (Copy-MediaFromUrl $officialUrl $fileName $pokemonApiId $dataDir $pokemonMediaDir) {
-                $mediaPaths.artworkOfficialPath = Get-AssetPath "media/pokemon/$pokemonApiId/$fileName"
-            }
-        }
-        
-        # official-artwork front_shiny
-        if ($sprites.other.'official-artwork'.front_shiny) {
-            $officialShinyUrl = $sprites.other.'official-artwork'.front_shiny
-            $ext = [System.IO.Path]::GetExtension($officialShinyUrl).TrimStart('.')
-            if ([string]::IsNullOrWhiteSpace($ext)) {
-                $ext = "png"
-            }
-            $fileName = "artwork_official_shiny.$ext"
-            if (Copy-MediaFromUrl $officialShinyUrl $fileName $pokemonApiId $dataDir $pokemonMediaDir) {
-                $mediaPaths.artworkOfficialShinyPath = Get-AssetPath "media/pokemon/$pokemonApiId/$fileName"
             }
         }
     }

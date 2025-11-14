@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import '../../database/app_database.dart';
 import '../../utils/loading_messages.dart';
+import '../../utils/media_path_helper.dart';
 import '../config/app_config.dart';
 
 /// Servicio para procesar backups CSV y cargar datos en la base de datos
@@ -15,8 +16,18 @@ class BackupProcessor {
   final AppDatabase database;
   final AppConfig? appConfig;
   
-  // URL del ZIP en GitHub Releases
-  static const String _backupZipUrl = 'https://github.com/Lorenzo-SF/PokeSearcher/releases/download/1.0.0/poke_searcher_backup.zip';
+  // URLs de los ZIPs en GitHub Releases (siempre estas 4 URLs)
+  static List<String> _backupZipUrls = [
+    'https://github.com/Lorenzo-SF/PokeSearcher/releases/download/1.0.0/poke_searcher_backup_database.zip',
+    'https://github.com/Lorenzo-SF/PokeSearcher/releases/download/1.0.0/poke_searcher_backup_media_item.zip',
+    'https://github.com/Lorenzo-SF/PokeSearcher/releases/download/1.0.0/poke_searcher_backup_media_pokemon-form.zip',
+    'https://github.com/Lorenzo-SF/PokeSearcher/releases/download/1.0.0/poke_searcher_backup_media_pokemon.zip',
+  ];
+  
+  /// Establecer las URLs de los ZIPs del backup
+  static void setBackupZipUrls(List<String> urls) {
+    _backupZipUrls = urls;
+  }
   
   BackupProcessor({
     required this.database,
@@ -33,44 +44,81 @@ class BackupProcessor {
     return dataDir;
   }
   
-  /// Buscar y mover la carpeta media a la ubicación correcta
-  Future<void> _findAndMoveMediaDirectory(Directory dataDir, Directory targetMediaDir) async {
+  /// Buscar la carpeta database en el directorio extraído
+  /// Puede estar directamente en dataDir o en una subcarpeta
+  Future<Directory?> _findDatabaseDirectory(Directory dataDir) async {
     try {
-      // Buscar recursivamente la carpeta media
+      // Primero verificar si está directamente en dataDir
+      final directDatabaseDir = Directory(path.join(dataDir.path, 'database'));
+      if (await directDatabaseDir.exists()) {
+        // Verificar que tiene archivos CSV
+        try {
+          final csvFiles = await directDatabaseDir.list()
+            .where((entity) => entity is File && entity.path.endsWith('.csv'))
+            .toList();
+          if (csvFiles.isNotEmpty) {
+            print('[BackupProcessor] ✅ Carpeta database encontrada directamente: ${directDatabaseDir.path} (${csvFiles.length} archivos CSV)');
+            return directDatabaseDir;
+          }
+        } catch (e) {
+          print('[BackupProcessor] ⚠️ Error verificando archivos CSV en ${directDatabaseDir.path}: $e');
+        }
+      }
+      
+      // Buscar recursivamente la carpeta database
+      print('[BackupProcessor] 🔍 Buscando carpeta database recursivamente...');
+      Directory? foundDatabaseDir;
+      int checkedDirs = 0;
+      
       await for (final entity in dataDir.list(recursive: true)) {
-        if (entity is Directory && path.basename(entity.path).toLowerCase() == 'media') {
-          // Encontramos una carpeta media
-          final sourceMediaDir = entity;
-          
-          // Si no es la ubicación objetivo, moverla
-          if (sourceMediaDir.path != targetMediaDir.path) {
-            print('[BackupProcessor] 📦 Moviendo carpeta media de ${sourceMediaDir.path} a ${targetMediaDir.path}');
-            
-            // Si ya existe la carpeta objetivo, eliminarla primero
-            if (await targetMediaDir.exists()) {
-              await targetMediaDir.delete(recursive: true);
+        if (entity is Directory && path.basename(entity.path).toLowerCase() == 'database') {
+          checkedDirs++;
+          // Verificar que tiene archivos CSV
+          try {
+            final csvFiles = await entity.list()
+              .where((e) => e is File && e.path.endsWith('.csv'))
+              .toList();
+            if (csvFiles.isNotEmpty) {
+              print('[BackupProcessor] ✅ Carpeta database encontrada en: ${entity.path} (${csvFiles.length} archivos CSV)');
+              foundDatabaseDir = entity;
+              break; // Encontrada, salir del bucle
             }
-            
-            // Crear directorio padre si no existe
-            final parentDir = Directory(path.dirname(targetMediaDir.path));
-            if (!await parentDir.exists()) {
-              await parentDir.create(recursive: true);
-            }
-            
-            // Mover la carpeta (copiar y luego eliminar)
-            await _copyDirectory(sourceMediaDir, targetMediaDir);
-            await sourceMediaDir.delete(recursive: true);
-            
-            print('[BackupProcessor] ✅ Carpeta media movida correctamente');
-            return;
+          } catch (e) {
+            // Continuar buscando
+            continue;
           }
         }
       }
       
-      print('[BackupProcessor] ⚠️ No se encontró carpeta media en el ZIP extraído');
+      if (foundDatabaseDir != null) {
+        return foundDatabaseDir;
+      }
+      
+      print('[BackupProcessor] ⚠️ No se encontró carpeta database con archivos CSV (revisadas $checkedDirs carpetas)');
+      
+      // Como último recurso, buscar archivos CSV directamente y usar su directorio padre
+      print('[BackupProcessor] 🔍 Buscando archivos CSV directamente...');
+      File? firstCsvFile;
+      await for (final entity in dataDir.list(recursive: true)) {
+        if (entity is File && 
+            entity.path.endsWith('.csv') && 
+            path.basename(entity.path).startsWith('01_')) {
+          firstCsvFile = entity;
+          print('[BackupProcessor] ✅ Encontrado primer CSV: ${firstCsvFile.path}');
+          break;
+        }
+      }
+      
+      if (firstCsvFile != null) {
+        final csvDir = Directory(path.dirname(firstCsvFile.path));
+        print('[BackupProcessor] ✅ Usando directorio del CSV encontrado: ${csvDir.path}');
+        return csvDir;
+      }
+      
+      return null;
     } catch (e) {
-      print('[BackupProcessor] ⚠️ Error buscando/moviendo carpeta media: $e');
-      // No es crítico, continuar
+      print('[BackupProcessor] ⚠️ Error buscando carpeta database: $e');
+      return null;
     }
   }
   
@@ -97,6 +145,7 @@ class BackupProcessor {
   /// entre reintentos hasta que tenga éxito o se encuentre un error no recuperable.
   Future<void> _downloadZipWithRetries({
     required File zipFile,
+    required String zipUrl,
     void Function(String message, double progress)? onProgress,
     String? languageCode,
     Duration initialDelay = const Duration(seconds: 2),
@@ -130,11 +179,11 @@ class BackupProcessor {
             LoadingMessages.getMessage('downloading_backup', languageCode),
             0.05,
           );
-          print('[BackupProcessor] 📥 Descargando ZIP desde: $_backupZipUrl (intento $attempt)');
+          print('[BackupProcessor] 📥 Descargando ZIP desde: $zipUrl (intento $attempt)');
         }
         
         // Crear request con headers apropiados para descargas grandes
-        final request = http.Request('GET', Uri.parse(_backupZipUrl));
+        final request = http.Request('GET', Uri.parse(zipUrl));
         request.headers.addAll({
           'User-Agent': 'PokeSearcher/1.0',
           'Accept': '*/*',
@@ -166,11 +215,11 @@ class BackupProcessor {
             await streamedResponse.stream.drain(); // Limpiar stream
             final httpException = HttpException(
               'Error descargando backup: código de estado ${streamedResponse.statusCode}',
-              uri: Uri.parse(_backupZipUrl),
+              uri: Uri.parse(zipUrl),
             );
             // Si es 404, no tiene sentido reintentar
             if (streamedResponse.statusCode == 404) {
-              print('[BackupProcessor] ❌ Archivo no encontrado (404): $_backupZipUrl');
+              print('[BackupProcessor] ❌ Archivo no encontrado (404): $zipUrl');
               throw httpException;
             }
             throw httpException;
@@ -349,11 +398,17 @@ class BackupProcessor {
     return true;
   }
   
-  /// Descargar y extraer el ZIP del backup
-  Future<Directory> _downloadAndExtractZip({
+  /// Descargar y extraer múltiples ZIPs del backup
+  Future<Directory> _downloadAndExtractZips({
     void Function(String message, double progress)? onProgress,
+    List<File>? downloadedZipFiles,
   }) async {
     final languageCode = appConfig?.language;
+    
+    // Verificar si hay URLs configuradas
+    if (_backupZipUrls.isEmpty) {
+      throw Exception('No se han configurado las URLs de los ZIPs del backup. Use BackupProcessor.setBackupZipUrls() para configurarlas.');
+    }
     
     // Verificar si ya está extraído
     final dataDir = await _getAppDataDirectory();
@@ -362,7 +417,9 @@ class BackupProcessor {
     
     if (await databaseDir.exists() && await mediaDir.exists()) {
       // Verificar que hay archivos
-      final csvFiles = await databaseDir.list().toList();
+      final csvFiles = await databaseDir.list()
+        .where((e) => e is File && e.path.endsWith('.csv'))
+        .toList();
       if (csvFiles.isNotEmpty) {
         print('[BackupProcessor] ✅ Backup ya extraído, usando archivos existentes');
         onProgress?.call(
@@ -373,115 +430,776 @@ class BackupProcessor {
       }
     }
     
-    // Obtener directorio temporal para el ZIP
+    // Limpiar directorio de datos si existe
+    if (await dataDir.exists()) {
+      await dataDir.delete(recursive: true);
+    }
+    await dataDir.create(recursive: true);
+    
+    // Obtener directorio temporal para los ZIPs
     final tempDir = await getTemporaryDirectory();
-    final zipFile = File(path.join(tempDir.path, 'poke_searcher_backup.zip'));
     
-    // Descargar ZIP con reintentos infinitos
-    await _downloadZipWithRetries(
-      zipFile: zipFile,
-      onProgress: onProgress,
-      languageCode: languageCode,
+    // Separar URLs de database y media
+    final databaseZipUrl = _backupZipUrls.firstWhere(
+      (url) => url.contains('database'),
+      orElse: () => '',
     );
+    final mediaZipUrls = _backupZipUrls.where((url) => url.contains('media')).toList();
     
-    // Extraer ZIP
-    onProgress?.call(
-      LoadingMessages.getMessage('extracting_backup', languageCode),
-      0.1,
-    );
-    print('[BackupProcessor] 📦 Extrayendo ZIP...');
+    print('[BackupProcessor] 📦 Total de ZIPs a procesar: ${_backupZipUrls.length}');
+    print('[BackupProcessor]   - Database: ${databaseZipUrl.isNotEmpty ? "1" : "0"}');
+    print('[BackupProcessor]   - Media: ${mediaZipUrls.length}');
     
     try {
-      // Leer ZIP desde archivo de forma asíncrona
-      final zipBytes = await zipFile.readAsBytes();
-      
-      // Decodificar ZIP en un isolate para no bloquear el hilo principal
-      final archive = await _decodeZipInIsolate(zipBytes);
-      
-      // Limpiar directorio de datos si existe
-      if (await dataDir.exists()) {
-        await dataDir.delete(recursive: true);
-      }
-      await dataDir.create(recursive: true);
-      
-      // Extraer archivos en chunks para permitir actualizaciones de UI
-      int extracted = 0;
-      final files = archive.whereType<ArchiveFile>().toList();
-      final total = files.length;
-      const chunkSize = 50; // Procesar 50 archivos por chunk
-      
-      for (int i = 0; i < files.length; i += chunkSize) {
-        final endIndex = (i + chunkSize < files.length) ? i + chunkSize : files.length;
-        final chunk = files.sublist(i, endIndex);
+      // 1. Procesar ZIP de database primero
+      if (databaseZipUrl.isNotEmpty) {
+        print('[BackupProcessor] 📥 Procesando ZIP de database...');
+        onProgress?.call(
+          LoadingMessages.getMessage('downloading_backup', languageCode),
+          0.05,
+        );
         
-        // Procesar chunk
-        for (final file in chunk) {
-          if (file.isFile) {
-            final filePath = path.join(dataDir.path, file.name);
-            final fileDir = Directory(path.dirname(filePath));
-            if (!await fileDir.exists()) {
-              await fileDir.create(recursive: true);
-            }
-            
-            final outFile = File(filePath);
-            await outFile.writeAsBytes(file.content as List<int>);
-            extracted++;
+        final databaseZipFile = File(path.join(tempDir.path, 'poke_searcher_backup_database.zip'));
+        
+        // Descargar ZIP de database
+        await _downloadZipWithRetries(
+          zipFile: databaseZipFile,
+          onProgress: (message, progress) {
+            onProgress?.call(message, 0.05 + (progress * 0.05)); // 5-10% para descarga de database
+          },
+          languageCode: languageCode,
+          zipUrl: databaseZipUrl,
+        );
+        
+        // Extraer ZIP de database
+        onProgress?.call(
+          LoadingMessages.getMessage('extracting_backup', languageCode),
+          0.1,
+        );
+        await _extractZip(databaseZipFile, dataDir, onProgress: (message, progress) {
+          onProgress?.call(message, 0.1 + (progress * 0.05)); // 10-15% para extracción de database
+        });
+        
+        // Guardar ruta del ZIP para borrarlo después de volcar los datos
+        if (downloadedZipFiles != null && await databaseZipFile.exists()) {
+          downloadedZipFiles.add(databaseZipFile);
+        }
+      }
+      
+      // 2. Procesar ZIPs de media
+      if (mediaZipUrls.isNotEmpty) {
+        print('[BackupProcessor] 📥 Procesando ${mediaZipUrls.length} ZIP(s) de media...');
+        
+        for (int i = 0; i < mediaZipUrls.length; i++) {
+          final mediaZipUrl = mediaZipUrls[i];
+          final progressStart = 0.15 + (i / mediaZipUrls.length) * 0.05; // 15-20% para descarga de media
+          final progressEnd = 0.15 + ((i + 1) / mediaZipUrls.length) * 0.05;
+          
+          print('[BackupProcessor] 📥 Procesando ZIP de media ${i + 1}/${mediaZipUrls.length}: $mediaZipUrl');
+          onProgress?.call(
+            'Descargando media ${i + 1}/${mediaZipUrls.length}...',
+            progressStart,
+          );
+          
+          final mediaZipFile = File(path.join(tempDir.path, 'poke_searcher_backup_media_$i.zip'));
+          
+          // Descargar ZIP de media
+          await _downloadZipWithRetries(
+            zipFile: mediaZipFile,
+            onProgress: (message, progress) {
+              onProgress?.call(
+                message,
+                progressStart + (progress * (progressEnd - progressStart)),
+              );
+            },
+            languageCode: languageCode,
+            zipUrl: mediaZipUrl,
+          );
+          
+          // Extraer ZIP de media
+          onProgress?.call(
+            'Extrayendo media ${i + 1}/${mediaZipUrls.length}...',
+            progressEnd * 0.8,
+          );
+          await _extractZip(mediaZipFile, dataDir, onProgress: (message, progress) {
+            onProgress?.call(
+              message,
+              progressEnd * 0.8 + (progress * (progressEnd * 0.2)),
+            );
+          });
+          
+          // Guardar ruta del ZIP para borrarlo después de volcar los datos
+          if (downloadedZipFiles != null && await mediaZipFile.exists()) {
+            downloadedZipFiles.add(mediaZipFile);
           }
         }
-        
-        // Permitir que la UI se actualice después de cada chunk
-        await Future.delayed(Duration.zero);
-        
-        // Actualizar progreso
-        if (extracted % 100 == 0 || extracted == total) {
-          final progress = 0.1 + (extracted / total) * 0.1;
-          onProgress?.call(
-            'Extrayendo... ($extracted/$total archivos)',
-            progress,
-          );
-        }
       }
       
-      print('[BackupProcessor] ✅ ZIP extraído: $extracted archivos');
+      // Reorganizar archivos aplanados si es necesario
+      await _reorganizeFlattenedFiles(dataDir);
       
-      // Asegurar que la carpeta media esté en la ubicación correcta
-      final targetMediaDir = Directory(path.join(dataDir.path, 'media'));
+      // Organizar carpetas después de extraer todos los ZIPs
+      await _organizeExtractedFolders(dataDir);
       
-      if (await targetMediaDir.exists()) {
-        print('[BackupProcessor] ✅ Carpeta media encontrada en ubicación correcta: ${targetMediaDir.path}');
-      } else {
-        // Buscar la carpeta media en otras ubicaciones posibles dentro del ZIP extraído
-        print('[BackupProcessor] 🔍 Buscando carpeta media en otras ubicaciones...');
-        await _findAndMoveMediaDirectory(dataDir, targetMediaDir);
+      // Verificar que los archivos de media existen después de la consolidación
+      final finalMediaDir = Directory(path.join(dataDir.path, 'media'));
+      print('[BackupProcessor] 🔍 Verificación final de archivos de media...');
+      print('[BackupProcessor]   - finalMediaDir: ${finalMediaDir.path}');
+      print('[BackupProcessor]   - finalMediaDir existe: ${await finalMediaDir.exists()}');
+      
+      final pokemonMediaDir = Directory(path.join(finalMediaDir.path, 'pokemon'));
+      if (await pokemonMediaDir.exists()) {
+        print('[BackupProcessor]   - pokemonMediaDir existe: ${pokemonMediaDir.path}');
         
-        // Verificar nuevamente después de mover
-        if (await targetMediaDir.exists()) {
-          print('[BackupProcessor] ✅ Carpeta media movida y verificada: ${targetMediaDir.path}');
+        // Verificar que existen archivos en pokemon/1/
+        final pokemon1Dir = Directory(path.join(pokemonMediaDir.path, '1'));
+        if (await pokemon1Dir.exists()) {
+          print('[BackupProcessor]   - pokemon/1/ existe');
+          int fileCount = 0;
+          List<String> fileNames = [];
+          await for (final entity in pokemon1Dir.list()) {
+            if (entity is File) {
+              fileCount++;
+              fileNames.add(path.basename(entity.path));
+            }
+          }
+          print('[BackupProcessor]   - pokemon/1/ tiene $fileCount archivos: ${fileNames.join(", ")}');
+          
+          // Si no hay archivos, intentar buscar en otras ubicaciones y moverlos
+          if (fileCount == 0) {
+            print('[BackupProcessor]   ⚠️ pokemon/1/ está vacío, buscando archivos en otras ubicaciones...');
+            // Buscar archivos de pokemon en cualquier ubicación dentro de dataDir
+            await for (final entity in dataDir.list(recursive: true)) {
+              if (entity is File) {
+                final fileName = path.basename(entity.path);
+                final parentDir = Directory(path.dirname(entity.path));
+                final parentName = path.basename(parentDir.path);
+                
+                // Si el archivo está en una carpeta que es un número (ID de pokemon)
+                if (RegExp(r'^\d+$').hasMatch(parentName) && 
+                    (fileName.contains('sprite') || fileName.contains('artwork') || fileName.contains('cry'))) {
+                  // Verificar si está en una ruta que contiene "pokemon"
+                  final relativePath = path.relative(entity.path, from: dataDir.path);
+                  if (relativePath.contains('pokemon') || 
+                      relativePath.contains('media')) {
+                    // Construir ruta de destino correcta
+                    final pathParts = path.split(relativePath);
+                    int pokemonIndex = -1;
+                    int idIndex = -1;
+                    
+                    for (int i = 0; i < pathParts.length; i++) {
+                      if (pathParts[i].toLowerCase() == 'pokemon') {
+                        pokemonIndex = i;
+                      }
+                      if (RegExp(r'^\d+$').hasMatch(pathParts[i]) && pokemonIndex >= 0 && i > pokemonIndex) {
+                        idIndex = i;
+                        break;
+                      }
+                    }
+                    
+                    if (pokemonIndex >= 0 && idIndex >= 0) {
+                      // Construir ruta de destino: media/pokemon/{id}/{fileName}
+                      final targetPath = path.join(
+                        finalMediaDir.path,
+                        'pokemon',
+                        pathParts[idIndex],
+                        fileName,
+                      );
+                      
+                      final targetDir = Directory(path.dirname(targetPath));
+                      if (!await targetDir.exists()) {
+                        await targetDir.create(recursive: true);
+                      }
+                      
+                      final targetFile = File(targetPath);
+                      if (!await targetFile.exists()) {
+                        await entity.copy(targetPath);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
         } else {
-          print('[BackupProcessor] ⚠️ Carpeta media no encontrada después de la búsqueda');
+          print('[BackupProcessor]   ⚠️ pokemon/1/ no existe');
         }
+      } else {
+        print('[BackupProcessor]   ⚠️ pokemonMediaDir no existe');
       }
       
-      // Borrar el ZIP después de extraer
-      try {
-        if (await zipFile.exists()) {
-          await zipFile.delete();
-          print('[BackupProcessor] ✅ ZIP borrado después de extraer');
+      // Verificar también algunos archivos específicos que sabemos que deberían existir
+      final testFiles = [
+        'pokemon/1/sprite_front_default.svg',
+        'pokemon/1/artwork_official.svg',
+        'pokemon/4/sprite_front_default.svg',
+        'pokemon/7/sprite_front_default.svg',
+      ];
+      
+      print('[BackupProcessor] 🔍 Verificando archivos de prueba:');
+      for (final testFile in testFiles) {
+        final testPath = path.join(finalMediaDir.path, testFile);
+        final testFileObj = File(testPath);
+        final exists = await testFileObj.exists();
+        print('[BackupProcessor]   ${exists ? "✅" : "❌"} $testFile: ${exists ? "existe" : "NO existe"}');
+        if (exists) {
+          final size = await testFileObj.length();
+          print('[BackupProcessor]      Tamaño: $size bytes');
         }
-      } catch (e) {
-        print('[BackupProcessor] ⚠️ No se pudo borrar el ZIP (no crítico): $e');
       }
       
       return dataDir;
     } catch (e) {
-      print('[BackupProcessor] ❌ Error extrayendo ZIP: $e');
-      // Intentar borrar el ZIP incluso si hay error
-      try {
-        if (await zipFile.exists()) {
-          await zipFile.delete();
-        }
-      } catch (_) {}
+      print('[BackupProcessor] ❌ Error procesando ZIPs: $e');
       rethrow;
+    }
+  }
+  
+  /// Extraer un ZIP a un directorio de destino
+  Future<void> _extractZip(
+    File zipFile,
+    Directory destDir, {
+    void Function(String message, double progress)? onProgress,
+  }) async {
+    try {
+      print('[BackupProcessor] 📦 Extrayendo ZIP: ${path.basename(zipFile.path)}');
+      print('[BackupProcessor]   - Destino: ${destDir.path}');
+      
+      // Intentar extraer usando unzip del sistema (más eficiente para archivos grandes)
+      try {
+        print('[BackupProcessor] 🔧 Intentando extraer con unzip del sistema...');
+        final result = await Process.run(
+          'unzip',
+          [
+            '-o', // Sobrescribir sin preguntar
+            '-q', // Modo silencioso
+            zipFile.path,
+            '-d', // Directorio de destino
+            destDir.path,
+          ],
+          runInShell: false,
+        );
+        
+        if (result.exitCode == 0) {
+          print('[BackupProcessor] ✅ Extracción con unzip completada');
+          
+          // Verificar estructura después de extracción
+          print('[BackupProcessor] 🔍 Verificando estructura después de extracción...');
+          try {
+            final topLevelItems = await destDir.list().toList();
+            print('[BackupProcessor]   - Elementos en raíz: ${topLevelItems.length}');
+            for (final item in topLevelItems.take(10)) {
+              final itemType = item is Directory ? '[DIR]' : '[FILE]';
+              print('[BackupProcessor]     $itemType ${path.basename(item.path)}');
+            }
+            
+            // Verificar si hay carpeta media
+            final mediaDir = Directory(path.join(destDir.path, 'media'));
+            if (await mediaDir.exists()) {
+              print('[BackupProcessor]   - Carpeta media encontrada');
+              final pokemonDir = Directory(path.join(mediaDir.path, 'pokemon'));
+              if (await pokemonDir.exists()) {
+                int pokemonCount = 0;
+                await for (final entity in pokemonDir.list()) {
+                  if (entity is Directory) pokemonCount++;
+                }
+                print('[BackupProcessor]   - Carpeta pokemon encontrada con $pokemonCount subcarpetas');
+              }
+            }
+          } catch (e) {
+            print('[BackupProcessor] ⚠️ Error verificando estructura: $e');
+          }
+          
+          return;
+        } else {
+          throw Exception('unzip falló: ${result.stderr}');
+        }
+      } catch (e) {
+        print('[BackupProcessor] ⚠️ unzip falló, usando archive package: $e');
+        // Fallback: usar archive package
+        
+        final zipBytes = await zipFile.readAsBytes();
+        final archive = await _decodeZipInIsolate(zipBytes);
+        
+        int extracted = 0;
+        final files = archive.whereType<ArchiveFile>().toList();
+        final total = files.length;
+        const chunkSize = 50;
+        
+        print('[BackupProcessor] 📦 Extrayendo $total archivos con archive package...');
+        
+        for (int i = 0; i < files.length; i += chunkSize) {
+          final endIndex = (i + chunkSize < files.length) ? i + chunkSize : files.length;
+          final chunk = files.sublist(i, endIndex);
+          
+          for (final file in chunk) {
+            if (file.isFile) {
+              final filePath = path.join(destDir.path, file.name);
+              final fileDir = Directory(path.dirname(filePath));
+              if (!await fileDir.exists()) {
+                await fileDir.create(recursive: true);
+              }
+              
+              final outFile = File(filePath);
+              await outFile.writeAsBytes(file.content as List<int>);
+              extracted++;
+              
+              // Log primeros archivos para ver estructura
+              if (extracted <= 5) {
+                print('[BackupProcessor]     📄 Extraído: ${file.name} -> $filePath');
+              }
+            }
+          }
+          
+          await Future.delayed(Duration.zero);
+          
+          if (extracted % 100 == 0 || extracted == total) {
+            onProgress?.call(
+              'Extrayendo... ($extracted/$total archivos)',
+              extracted / total,
+            );
+          }
+        }
+        
+        print('[BackupProcessor] ✅ Extracción con archive package completada: $extracted archivos');
+      }
+    } catch (e) {
+      rethrow;
+    }
+  }
+  
+  /// Reorganizar archivos que se extrajeron con nombres aplanados
+  /// Ejemplo: "mediapokemon1000sprite_front_shiny.png" -> "media/pokemon/1000/sprite_front_shiny.png"
+  Future<void> _reorganizeFlattenedFiles(Directory dataDir) async {
+    print('[BackupProcessor] 🔄 Reorganizando archivos aplanados...');
+    
+    try {
+      final mediaDir = Directory(path.join(dataDir.path, 'media'));
+      if (!await mediaDir.exists()) {
+        await mediaDir.create(recursive: true);
+      }
+      
+      int reorganizedCount = 0;
+      
+      // Buscar archivos con nombres aplanados recursivamente en media y también en dataDir
+      final searchDirs = [mediaDir, dataDir];
+      
+      for (final searchDir in searchDirs) {
+        if (!await searchDir.exists()) continue;
+        
+        print('[BackupProcessor]   🔍 Buscando archivos aplanados en: ${searchDir.path}');
+        
+        await for (final entity in searchDir.list(recursive: true)) {
+          if (entity is File) {
+            final fileName = path.basename(entity.path);
+            
+            // Patrón: mediapokemon{id}{filename} o media{item}{id}{filename}, etc.
+            // Ejemplo: "mediapokemon1000sprite_front_shiny.png" -> pokemon/1000/sprite_front_shiny.png
+            String? mediaType;
+            String? entityId;
+            String? actualFileName;
+            
+            // Intentar diferentes patrones
+            // 1. mediapokemon{id}{filename}
+            var match = RegExp(r'^mediapokemon(\d+)(.+)$', caseSensitive: false).firstMatch(fileName);
+            if (match != null) {
+              mediaType = 'pokemon';
+              entityId = match.group(1);
+              actualFileName = match.group(2);
+            } else {
+              // 2. mediaitem{id}{filename}
+              match = RegExp(r'^mediaitem(\d+)(.+)$', caseSensitive: false).firstMatch(fileName);
+              if (match != null) {
+                mediaType = 'item';
+                entityId = match.group(1);
+                actualFileName = match.group(2);
+              } else {
+                // 3. mediapokemon-form{id}{filename} (con guión)
+                match = RegExp(r'^mediapokemon-form(\d+)(.+)$', caseSensitive: false).firstMatch(fileName);
+                if (match != null) {
+                  mediaType = 'pokemon-form';
+                  entityId = match.group(1);
+                  actualFileName = match.group(2);
+                } else {
+                  // 4. mediaform{id}{filename}
+                  match = RegExp(r'^mediaform(\d+)(.+)$', caseSensitive: false).firstMatch(fileName);
+                  if (match != null) {
+                    mediaType = 'form';
+                    entityId = match.group(1);
+                    actualFileName = match.group(2);
+                  }
+                }
+              }
+            }
+            
+            if (mediaType != null && entityId != null && actualFileName != null) {
+              // Construir ruta de destino correcta
+              final targetDir = Directory(path.join(mediaDir.path, mediaType, entityId));
+              if (!await targetDir.exists()) {
+                await targetDir.create(recursive: true);
+              }
+              
+              final targetPath = path.join(targetDir.path, actualFileName);
+              final targetFile = File(targetPath);
+              
+              // Solo mover si no existe ya en la ubicación correcta
+              if (!await targetFile.exists()) {
+                try {
+                  // Si el archivo está en otro directorio, usar copy + delete en lugar de rename
+                  if (path.dirname(entity.path) != targetDir.path) {
+                    await entity.copy(targetPath);
+                    await entity.delete();
+                  } else {
+                    await entity.rename(targetPath);
+                  }
+                  reorganizedCount++;
+                  
+                  if (reorganizedCount <= 10) {
+                    print('[BackupProcessor]   ✅ Reorganizado: $fileName -> $mediaType/$entityId/$actualFileName');
+                  }
+                } catch (e) {
+                  print('[BackupProcessor]   ⚠️ Error reorganizando $fileName: $e');
+                }
+              } else {
+                // Si ya existe, eliminar el duplicado aplanado
+                try {
+                  await entity.delete();
+                  print('[BackupProcessor]   🗑️ Eliminado duplicado aplanado: $fileName');
+                } catch (e) {
+                  print('[BackupProcessor]   ⚠️ Error eliminando duplicado $fileName: $e');
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      if (reorganizedCount > 0) {
+        print('[BackupProcessor] ✅ Reorganizados $reorganizedCount archivos aplanados');
+      } else {
+        print('[BackupProcessor] ℹ️ No se encontraron archivos aplanados para reorganizar');
+      }
+    } catch (e, stackTrace) {
+      print('[BackupProcessor] ⚠️ Error reorganizando archivos aplanados: $e');
+      print('[BackupProcessor] StackTrace: $stackTrace');
+    }
+  }
+  
+  /// Organizar las carpetas extraídas (database y media) en sus ubicaciones correctas
+  Future<void> _organizeExtractedFolders(Directory dataDir) async {
+    
+    // Buscar la carpeta database real (puede estar en una subcarpeta del ZIP)
+    final expectedDatabaseDir = Directory(path.join(dataDir.path, 'database'));
+    final expectedMediaDir = Directory(path.join(dataDir.path, 'media'));
+    
+    // Primero verificar si están directamente en dataDir
+    bool databaseFound = await expectedDatabaseDir.exists();
+    bool mediaFound = await expectedMediaDir.exists();
+    
+    // Siempre buscar y consolidar, incluso si ya existen, para asegurar que todos los ZIPs se consolidaron
+    
+    // Buscar recursivamente las carpetas database y media
+    Directory? foundDatabaseDir;
+    List<Directory> foundMediaDirs = [];
+    
+    try {
+      await for (final entity in dataDir.list(recursive: true)) {
+        if (entity is Directory) {
+          final dirName = path.basename(entity.path).toLowerCase();
+          
+          // Buscar carpeta database
+          if (dirName == 'database' && foundDatabaseDir == null) {
+            // Verificar que tiene archivos CSV
+            try {
+              final csvFiles = await entity.list()
+                .where((e) => e is File && e.path.endsWith('.csv'))
+                .toList();
+              if (csvFiles.isNotEmpty) {
+                foundDatabaseDir = entity;
+              }
+            } catch (e) {
+              // Continuar buscando
+            }
+          }
+          
+          // Buscar carpetas media (puede haber múltiples si vienen de diferentes ZIPs)
+          if (dirName == 'media') {
+            // Verificar que tiene subcarpetas o archivos
+            try {
+              final items = await entity.list().toList();
+              if (items.isNotEmpty) {
+                foundMediaDirs.add(entity);
+              }
+            } catch (e) {
+              // Continuar buscando
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // Error silencioso
+    }
+    
+    // Mover database si está en otra ubicación
+    if (foundDatabaseDir != null && foundDatabaseDir.path != expectedDatabaseDir.path) {
+      if (await expectedDatabaseDir.exists()) {
+        await expectedDatabaseDir.delete(recursive: true);
+      }
+      await _copyDirectory(foundDatabaseDir, expectedDatabaseDir);
+    }
+    
+    // Consolidar todas las carpetas media encontradas en una sola
+    // Crear carpeta media de destino si no existe
+    if (!await expectedMediaDir.exists()) {
+      await expectedMediaDir.create(recursive: true);
+    }
+    
+    if (foundMediaDirs.isNotEmpty) {
+      print('[BackupProcessor] 📦 Consolidando ${foundMediaDirs.length} carpeta(s) media encontrada(s)');
+      // Mover/consolidar contenido de cada carpeta media encontrada
+      for (int i = 0; i < foundMediaDirs.length; i++) {
+        final mediaDir = foundMediaDirs[i];
+        print('[BackupProcessor]   📁 Procesando carpeta media ${i + 1}/${foundMediaDirs.length}: ${mediaDir.path}');
+        
+        // Copiar contenido de la carpeta media encontrada a la carpeta media de destino
+        try {
+          int filesProcessed = 0;
+          int filesCopied = 0;
+          int filesSkipped = 0;
+          
+          // Listar todos los archivos recursivamente
+          await for (final entity in mediaDir.list(recursive: true)) {
+            // Obtener ruta relativa desde mediaDir
+            final relativePath = path.relative(entity.path, from: mediaDir.path);
+            
+            // Construir ruta de destino
+            final targetPath = path.join(expectedMediaDir.path, relativePath);
+            
+            // Si la ruta de origen y destino son la misma, saltar
+            if (entity.path == targetPath) {
+              continue;
+            }
+            
+            if (entity is File) {
+              filesProcessed++;
+              
+              // Crear directorio padre si no existe
+              final targetDir = Directory(path.dirname(targetPath));
+              if (!await targetDir.exists()) {
+                await targetDir.create(recursive: true);
+              }
+              
+              // Copiar archivo solo si no existe o es diferente
+              final targetFile = File(targetPath);
+              bool shouldCopy = true;
+              
+              if (await targetFile.exists()) {
+                // Si ya existe, verificar si es el mismo archivo
+                final existingSize = await targetFile.length();
+                final sourceSize = await entity.length();
+                if (existingSize == sourceSize) {
+                  shouldCopy = false; // Ya existe y es igual, saltar
+                  filesSkipped++;
+                } else {
+                  // Reemplazar si es diferente
+                  await targetFile.delete();
+                }
+              }
+              
+              if (shouldCopy) {
+                await entity.copy(targetPath);
+                filesCopied++;
+                
+                // Log cada 50 archivos para no saturar
+                if (filesCopied % 50 == 0) {
+                  print('[BackupProcessor]     ✅ Copiados $filesCopied archivos...');
+                }
+              }
+            } else if (entity is Directory) {
+              // Crear directorio si no existe
+              final targetDir = Directory(targetPath);
+              if (!await targetDir.exists()) {
+                await targetDir.create(recursive: true);
+              }
+            }
+          }
+          
+          print('[BackupProcessor]   ✅ Carpeta media ${i + 1} procesada: $filesProcessed archivos procesados, $filesCopied copiados, $filesSkipped omitidos');
+        } catch (e, stackTrace) {
+          print('[BackupProcessor]   ❌ Error procesando carpeta media ${mediaDir.path}: $e');
+          print('[BackupProcessor]   StackTrace: $stackTrace');
+        }
+      }
+      
+      // Verificar archivos después de consolidación
+      print('[BackupProcessor] 🔍 Verificando archivos después de consolidación...');
+      final pokemonMediaDir = Directory(path.join(expectedMediaDir.path, 'pokemon'));
+      if (await pokemonMediaDir.exists()) {
+        int pokemonDirs = 0;
+        int totalFiles = 0;
+        await for (final entity in pokemonMediaDir.list()) {
+          if (entity is Directory) {
+            pokemonDirs++;
+            int filesInDir = 0;
+            await for (final file in entity.list()) {
+              if (file is File) {
+                filesInDir++;
+                totalFiles++;
+              }
+            }
+            if (filesInDir > 0 && pokemonDirs <= 10) {
+              print('[BackupProcessor]   📂 pokemon/${path.basename(entity.path)}: $filesInDir archivos');
+            }
+          }
+        }
+        print('[BackupProcessor]   ✅ Total: $pokemonDirs carpetas de pokemon, $totalFiles archivos');
+      } else {
+        print('[BackupProcessor]   ⚠️ Carpeta pokemon no existe después de consolidación');
+      }
+    }
+    
+    // Si no se encontraron carpetas media o media no existe, buscar archivos directamente
+    if (foundMediaDirs.isEmpty || !mediaFound) {
+      // Como último recurso, buscar archivos de media directamente (imágenes, sonidos)
+      try {
+        // Crear carpeta media de destino
+        if (!await expectedMediaDir.exists()) {
+          await expectedMediaDir.create(recursive: true);
+        }
+        
+        await for (final entity in dataDir.list(recursive: true)) {
+          if (entity is File) {
+            final ext = path.extension(entity.path).toLowerCase();
+            if (ext == '.svg' || ext == '.png' || ext == '.jpg' || ext == '.jpeg' || ext == '.ogg' || ext == '.mp3') {
+              // Intentar determinar la estructura de carpetas
+              final relativePath = path.relative(entity.path, from: dataDir.path);
+              final pathParts = path.split(relativePath);
+              
+              // Buscar si hay una carpeta "pokemon", "item", etc. en la ruta
+              int mediaTypeIndex = -1;
+              
+              for (int i = 0; i < pathParts.length; i++) {
+                final part = pathParts[i].toLowerCase();
+                if (part == 'pokemon' || part == 'item' || part == 'pokemon-form') {
+                  mediaTypeIndex = i;
+                  break;
+                }
+              }
+              
+              if (mediaTypeIndex >= 0 && mediaTypeIndex < pathParts.length - 1) {
+                // Construir ruta de destino en media/
+                final mediaSubPath = pathParts.sublist(mediaTypeIndex);
+                
+                // Si el primer elemento ya es "media", saltarlo
+                List<String> finalPath = [];
+                if (pathParts[0].toLowerCase() == 'media' && mediaTypeIndex > 0) {
+                  finalPath = pathParts.sublist(mediaTypeIndex);
+                } else {
+                  finalPath = mediaSubPath;
+                }
+                
+                final targetPath = path.join(expectedMediaDir.path, finalPath.join(Platform.pathSeparator));
+                final targetDir = Directory(path.dirname(targetPath));
+                
+                if (!await targetDir.exists()) {
+                  await targetDir.create(recursive: true);
+                }
+                
+                final targetFile = File(targetPath);
+                if (!await targetFile.exists()) {
+                  await entity.copy(targetPath);
+                } else {
+                  // Verificar si el archivo existente es diferente
+                  final existingSize = await targetFile.length();
+                  final sourceSize = await entity.length();
+                  if (existingSize != sourceSize) {
+                    // Reemplazar si es diferente
+                    await targetFile.delete();
+                    await entity.copy(targetPath);
+                  }
+                }
+              } else {
+                // Si no encontramos la estructura esperada, intentar inferirla del nombre del archivo
+                final fileName = path.basename(entity.path);
+                if (fileName.contains('sprite') || fileName.contains('artwork') || fileName.contains('cry')) {
+                  // Intentar extraer el ID del pokemon de la ruta
+                  for (int i = 0; i < pathParts.length; i++) {
+                    final part = pathParts[i];
+                    // Si encontramos un número, podría ser el ID del pokemon
+                    if (RegExp(r'^\d+$').hasMatch(part)) {
+                      final pokemonId = part;
+                      // Determinar tipo de archivo
+                      String? fileType = 'pokemon';
+                      if (fileName.contains('cry')) {
+                        fileType = 'pokemon';
+                      }
+                      
+                      final targetPath = path.join(expectedMediaDir.path, fileType, pokemonId, fileName);
+                      final targetDir = Directory(path.dirname(targetPath));
+                      
+                      if (!await targetDir.exists()) {
+                        await targetDir.create(recursive: true);
+                      }
+                      
+                      final targetFile = File(targetPath);
+                      if (!await targetFile.exists()) {
+                        await entity.copy(targetPath);
+                      }
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e, stackTrace) {
+        // Error silencioso
+      }
+    }
+  }
+  
+  /// Fusionar dos directorios, copiando archivos que no existen en el destino
+  Future<void> _mergeDirectories(Directory source, Directory target) async {
+    if (!await target.exists()) {
+      await target.create(recursive: true);
+    }
+    
+    // Listar recursivamente para mantener la estructura completa
+    await for (final entity in source.list(recursive: true)) {
+      // Obtener ruta relativa desde source
+      final relativePath = path.relative(entity.path, from: source.path);
+      
+      // Construir ruta de destino
+      final targetPath = path.join(target.path, relativePath);
+      
+      if (entity is File) {
+        // Crear directorio padre si no existe
+        final targetDir = Directory(path.dirname(targetPath));
+        if (!await targetDir.exists()) {
+          await targetDir.create(recursive: true);
+        }
+        
+        final targetFile = File(targetPath);
+        if (!await targetFile.exists()) {
+          await entity.copy(targetPath);
+        } else {
+          // Verificar si el archivo existente es diferente
+          final existingSize = await targetFile.length();
+          final sourceSize = await entity.length();
+          if (existingSize != sourceSize) {
+            // Reemplazar si es diferente
+            await targetFile.delete();
+            await entity.copy(targetPath);
+          }
+        }
+      } else if (entity is Directory) {
+        // Crear directorio si no existe
+        final targetDir = Directory(targetPath);
+        if (!await targetDir.exists()) {
+          await targetDir.create(recursive: true);
+        }
+      }
     }
   }
   
@@ -493,6 +1211,9 @@ class BackupProcessor {
   Future<void> processBackupFromAssets({
     void Function(String message, double progress)? onProgress,
   }) async {
+    // Lista de archivos ZIP descargados para borrarlos después de volcar los datos
+    final downloadedZipFiles = <File>[];
+    
     try {
       final languageCode = appConfig?.language;
       final message = LoadingMessages.getMessage('preparing', languageCode);
@@ -500,9 +1221,127 @@ class BackupProcessor {
       print('[BackupProcessor] Progreso: 0.0% - $message');
       onProgress?.call(message, 0.0);
       
-      // Descargar y extraer ZIP (0-20% del progreso)
-      final dataDir = await _downloadAndExtractZip(onProgress: onProgress);
-      final databaseDir = Directory(path.join(dataDir.path, 'database'));
+      // Descargar y extraer ZIPs (0-20% del progreso)
+      // Pasar la lista para que guarde las rutas de los ZIPs descargados
+      final dataDir = await _downloadAndExtractZips(
+        onProgress: onProgress,
+        downloadedZipFiles: downloadedZipFiles,
+      );
+      Directory databaseDir = Directory(path.join(dataDir.path, 'database'));
+      
+      // Verificar nuevamente la ubicación de database después de la extracción
+      // (puede haber sido movida durante la extracción)
+      final verifiedDatabaseDir = await _findDatabaseDirectory(dataDir);
+      if (verifiedDatabaseDir != null && verifiedDatabaseDir.path != databaseDir.path) {
+        print('[BackupProcessor] 📁 Usando carpeta database encontrada: ${verifiedDatabaseDir.path}');
+        databaseDir = verifiedDatabaseDir;
+      } else if (verifiedDatabaseDir == null) {
+        // Si no se encontró database, buscar archivos CSV directamente
+        print('[BackupProcessor] ⚠️ No se encontró carpeta database. Buscando archivos CSV en cualquier ubicación...');
+        List<File> allCsvFiles = [];
+        List<File> csvFilesInDatabase = [];
+        Directory? csvDatabaseDir;
+        
+        try {
+          // Primero, buscar TODOS los CSV para ver qué hay
+          await for (final entity in dataDir.list(recursive: true)) {
+            if (entity is File && entity.path.endsWith('.csv')) {
+              allCsvFiles.add(entity);
+              
+              // Verificar si está en una carpeta "database"
+              Directory currentDir = Directory(path.dirname(entity.path));
+              Directory? foundDatabaseDir;
+              
+              while (currentDir.path != dataDir.path && currentDir.path.length > dataDir.path.length) {
+                if (path.basename(currentDir.path).toLowerCase() == 'database') {
+                  foundDatabaseDir = currentDir;
+                  break;
+                }
+                final parentPath = path.dirname(currentDir.path);
+                if (parentPath == currentDir.path) break; // Evitar bucle infinito
+                currentDir = Directory(parentPath);
+              }
+              
+              if (foundDatabaseDir != null) {
+                csvFilesInDatabase.add(entity);
+                if (csvDatabaseDir == null) {
+                  csvDatabaseDir = foundDatabaseDir;
+                  print('[BackupProcessor] 📁 Carpeta database encontrada desde CSV: ${csvDatabaseDir.path}');
+                  print('[BackupProcessor] 📄 Primer CSV encontrado: ${path.basename(entity.path)}');
+                }
+              }
+            }
+          }
+          
+          print('[BackupProcessor] 📊 Total de archivos CSV encontrados: ${allCsvFiles.length}');
+          print('[BackupProcessor] 📊 CSV en carpetas "database": ${csvFilesInDatabase.length}');
+          
+          if (allCsvFiles.isEmpty) {
+            // No hay CSV en absoluto - listar estructura para debugging
+            print('[BackupProcessor] ⚠️ No se encontraron archivos CSV. Listando estructura del ZIP extraído...');
+            int topLevelItemsCount = 0;
+            try {
+              final topLevelItems = await dataDir.list().toList();
+              topLevelItemsCount = topLevelItems.length;
+              print('[BackupProcessor] 📂 Elementos en la raíz (primeros 30):');
+              for (final item in topLevelItems.take(30)) {
+                final itemType = item is Directory ? '[DIR]' : '[FILE]';
+                print('[BackupProcessor]   $itemType ${item.path}');
+              }
+              
+              // Buscar si hay alguna carpeta que pueda contener CSV
+              print('[BackupProcessor] 🔍 Buscando carpetas que puedan contener CSV...');
+              for (final item in topLevelItems) {
+                if (item is Directory) {
+                  try {
+                    final subItems = await item.list().toList();
+                    final hasCsv = subItems.any((subItem) => subItem is File && subItem.path.endsWith('.csv'));
+                    if (hasCsv) {
+                      print('[BackupProcessor] ✅ Carpeta con CSV encontrada: ${item.path}');
+                    }
+                  } catch (e) {
+                    // Ignorar errores al listar
+                  }
+                }
+              }
+            } catch (e) {
+              print('[BackupProcessor] ⚠️ Error listando estructura: $e');
+            }
+            
+            throw Exception(
+              'El ZIP no contiene archivos CSV. '
+              'El ZIP extraído tiene $topLevelItemsCount elementos en la raíz, pero no se encontraron archivos CSV. '
+              'Verifica que el script de generación del ZIP incluya los archivos CSV en la carpeta "database".'
+            );
+          }
+          
+          // Si hay CSV pero no en carpetas "database", usar el directorio del primer CSV
+          if (csvFilesInDatabase.isEmpty && allCsvFiles.isNotEmpty) {
+            print('[BackupProcessor] ⚠️ CSV encontrados pero no en carpeta "database". Usando ubicación del primer CSV...');
+            final firstCsv = allCsvFiles.first;
+            csvDatabaseDir = Directory(path.dirname(firstCsv.path));
+            print('[BackupProcessor] 📁 Usando directorio del CSV: ${csvDatabaseDir.path}');
+            print('[BackupProcessor] 📄 Primer CSV: ${path.basename(firstCsv.path)}');
+            csvFilesInDatabase = allCsvFiles; // Usar todos los CSV encontrados
+          }
+          
+          if (csvDatabaseDir != null) {
+            databaseDir = csvDatabaseDir;
+            print('[BackupProcessor] 📁 Estableciendo databaseDir: ${databaseDir.path}');
+          } else {
+            throw Exception(
+              'No se pudo determinar la ubicación de la carpeta database. '
+              'Se encontraron ${allCsvFiles.length} archivos CSV pero no se pudo identificar la carpeta database.'
+            );
+          }
+        } catch (e) {
+          if (e.toString().contains('El ZIP no contiene archivos CSV') || 
+              e.toString().contains('No se pudo determinar')) {
+            rethrow;
+          }
+          print('[BackupProcessor] ⚠️ Error buscando archivos CSV: $e');
+        }
+      }
       
       // Lista de archivos CSV en orden (uno por tabla)
       final csvFiles = [
@@ -594,8 +1433,69 @@ class BackupProcessor {
         );
         
         // Cargar archivo CSV desde directorio extraído
-        final csvFile = File(path.join(databaseDir.path, fileName));
+        File csvFile = File(path.join(databaseDir.path, fileName));
         String csvContent;
+        
+        // Si el archivo no existe en la ubicación esperada, buscarlo recursivamente
+        if (!await csvFile.exists()) {
+          print('[BackupProcessor] ⚠️ Archivo no encontrado en ubicación esperada: ${csvFile.path}');
+          print('[BackupProcessor] 🔍 Buscando archivo $fileName recursivamente...');
+          
+          // Buscar el archivo recursivamente en dataDir
+          File? foundFile;
+          int searchedFiles = 0;
+          try {
+            await for (final entity in dataDir.list(recursive: true)) {
+              if (entity is File && entity.path.endsWith('.csv')) {
+                searchedFiles++;
+                if (searchedFiles % 100 == 0) {
+                  print('[BackupProcessor] 🔍 Buscando CSV... (${searchedFiles} CSV revisados)');
+                }
+                
+                if (path.basename(entity.path) == fileName) {
+                  foundFile = entity;
+                  print('[BackupProcessor] ✅ Archivo encontrado en: ${foundFile.path}');
+                  
+                  // Actualizar databaseDir si es diferente
+                  final foundDatabaseDir = Directory(path.dirname(foundFile.path));
+                  if (foundDatabaseDir.path != databaseDir.path) {
+                    print('[BackupProcessor] 📁 Actualizando databaseDir a: ${foundDatabaseDir.path}');
+                    databaseDir = foundDatabaseDir; // Actualizar para los siguientes archivos
+                  }
+                  
+                  break;
+                }
+              }
+            }
+            print('[BackupProcessor] 🔍 Búsqueda completada: ${searchedFiles} archivos CSV revisados');
+          } catch (e) {
+            print('[BackupProcessor] ⚠️ Error buscando archivo recursivamente: $e');
+          }
+          
+          if (foundFile != null) {
+            csvFile = foundFile;
+          } else {
+            // Si aún no se encuentra, verificar si databaseDir existe y listar su contenido
+            print('[BackupProcessor] ⚠️ Archivo $fileName no encontrado después de búsqueda recursiva');
+            if (await databaseDir.exists()) {
+              print('[BackupProcessor] 📂 Contenido de databaseDir (primeros 20 CSV):');
+              try {
+                final items = await databaseDir.list()
+                  .where((item) => item is File && item.path.endsWith('.csv'))
+                  .toList();
+                print('[BackupProcessor] 📂 Total de CSV en databaseDir: ${items.length}');
+                for (final item in items.take(20)) {
+                  print('[BackupProcessor]   - ${item.path}');
+                }
+              } catch (e) {
+                print('[BackupProcessor] ⚠️ Error listando databaseDir: $e');
+              }
+            } else {
+              print('[BackupProcessor] ⚠️ databaseDir no existe: ${databaseDir.path}');
+            }
+          }
+        }
+        
         try {
           print('[BackupProcessor] Cargando archivo: ${csvFile.path}');
           if (!await csvFile.exists()) {
@@ -694,6 +1594,27 @@ class BackupProcessor {
         print('[BackupProcessor] Progreso: 100.0% - Proceso completado');
         final completedMsg = LoadingMessages.getMessage('completed', languageCode);
         onProgress?.call(completedMsg, 1.0);
+        
+        // Borrar ZIPs después de volcar los datos a la base de datos
+        print('[BackupProcessor] 🗑️ Eliminando archivos ZIP descargados...');
+        int deletedCount = 0;
+        for (final zipFile in downloadedZipFiles) {
+          try {
+            if (await zipFile.exists()) {
+              await zipFile.delete();
+              deletedCount++;
+              print('[BackupProcessor]   ✅ Eliminado: ${path.basename(zipFile.path)}');
+            }
+          } catch (e) {
+            print('[BackupProcessor]   ⚠️ No se pudo eliminar ${path.basename(zipFile.path)}: $e');
+          }
+        }
+        
+        if (deletedCount > 0) {
+          print('[BackupProcessor] ✅ $deletedCount archivo(s) ZIP eliminado(s)');
+        } else {
+          print('[BackupProcessor] ℹ️ No se encontraron archivos ZIP para eliminar');
+        }
       } catch (e, stackTrace) {
         print('[BackupProcessor] ❌ ERROR en transacción: $e');
         print('[BackupProcessor] Stack trace: $stackTrace');
