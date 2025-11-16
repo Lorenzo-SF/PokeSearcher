@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'dart:io';
@@ -51,12 +50,13 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
   final Map<int, String?> _moveDamageClasses = {}; // moveId -> damageClassName
   List<PokemonData> _evolutions = [];
   final List<PokemonData> _variants = [];
-  final List<PokemonData> _specialVariants = []; // mega, gigamax, primal sin pokedex
+  final List<PokemonData> _specialVariants = []; // mega, gigamax, primal sin pokedex (solo del pokemon actual)
+  final List<PokemonData> _allEvolutionVariants = []; // variantes de TODA la gama evolutiva
   String? _genus;
   String? _description;
   String? _pokemonName;
   bool _isLoading = true;
-  bool _isShiny = false;
+  String _currentImageType = 'front_transparent'; // front_transparent, front_shiny_transparent, front_gray
   late TranslationService _translationService;
   final AudioPlayer _audioPlayer = AudioPlayer();
   final FlutterTts _flutterTts = FlutterTts();
@@ -64,8 +64,6 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
   List<Ability> _abilities = []; // Habilidades del pokemon
   int? _pokedexEntryNumber; // Número en la pokedex usada para ordenar
   int? _nationalEntryNumber; // Número en la pokedex nacional
-  String? _shortDescription; // Descripción corta
-  String? _longDescription; // Descripción larga
 
   @override
   void initState() {
@@ -80,38 +78,123 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
 
   Future<void> _initializeAudio() async {
     try {
-      await _flutterTts.setLanguage('es-ES');
-      await _flutterTts.setSpeechRate(0.3); // Más lento para sonar robótico
+      // Forzar idioma a castellano (es-ES)
+      const locale = 'es-ES';
+      
+      await _flutterTts.setLanguage(locale);
+      
+      // Configuración para voz robótica
+      await _flutterTts.setSpeechRate(0.2); // Más lento para sonar más robótico
       await _flutterTts.setVolume(1.0);
-      await _flutterTts.setPitch(0.3); // Voz más grave (masculina y robótica)
-      // Intentar usar un motor de voz más robótico si está disponible
+      await _flutterTts.setPitch(0.1); // Pitch muy bajo para sonar más robótico y grave
+      
+      // Intentar configurar voz masculina en castellano
       try {
-        await _flutterTts.setEngine('com.google.android.tts');
-        // Intentar configurar voz masculina
+        // Obtener todas las voces disponibles
         final voices = await _flutterTts.getVoices;
-        if (voices != null) {
-          // Buscar voz masculina en español
-          final maleVoice = voices.firstWhere(
-            (voice) => voice['locale']?.toString().startsWith('es') == true &&
-                       (voice['name']?.toString().toLowerCase().contains('male') == true ||
-                        voice['name']?.toString().toLowerCase().contains('masculino') == true),
-            orElse: () => voices.firstWhere(
-              (voice) => voice['locale']?.toString().startsWith('es') == true,
-              orElse: () => voices.first,
-            ),
-          );
-          if (maleVoice != null && maleVoice['name'] != null) {
-            await _flutterTts.setVoice({'name': maleVoice['name'], 'locale': maleVoice['locale']});
+        if (voices != null && voices.isNotEmpty) {
+          print('[PokemonDetailScreen] 🔍 Buscando voz masculina en castellano...');
+          print('[PokemonDetailScreen]   Voces disponibles: ${voices.length}');
+          
+          // Buscar voz masculina en castellano con múltiples criterios
+          Map<String, dynamic>? selectedVoice;
+          
+          // Prioridad 1: Buscar voces específicamente masculinas en es-ES
+          for (final voice in voices) {
+            final voiceLocale = voice['locale']?.toString().toLowerCase() ?? '';
+            final voiceName = voice['name']?.toString().toLowerCase() ?? '';
+            final voiceLabel = voice['label']?.toString().toLowerCase() ?? '';
+            
+            // Verificar que sea español
+            if (voiceLocale.startsWith('es')) {
+              // Buscar indicadores de voz masculina
+              final isMale = voiceName.contains('male') || 
+                            voiceName.contains('masculino') ||
+                            voiceName.contains('hombre') ||
+                            voiceName.contains('man') ||
+                            voiceName.contains('masc') ||
+                            voiceLabel.contains('male') ||
+                            voiceLabel.contains('masculino') ||
+                            voiceLabel.contains('hombre') ||
+                            voiceLabel.contains('man') ||
+                            voiceLabel.contains('masc');
+              
+              if (isMale) {
+                selectedVoice = voice;
+                print('[PokemonDetailScreen] ✅ Voz masculina encontrada: ${voice['name']} (${voice['locale']})');
+                break;
+              }
+            }
           }
+          
+          // Prioridad 2: Si no se encontró voz masculina explícita, buscar cualquier voz en es-ES
+          // y verificar por nombre común de voces masculinas
+          if (selectedVoice == null) {
+            for (final voice in voices) {
+              final voiceLocale = voice['locale']?.toString().toLowerCase() ?? '';
+              final voiceName = voice['name']?.toString().toLowerCase() ?? '';
+              
+              if (voiceLocale == 'es-es' || voiceLocale == 'es') {
+                // Nombres comunes de voces masculinas en español
+                final commonMaleNames = [
+                  'pablo', 'carlos', 'jorge', 'luis', 'diego', 'miguel',
+                  'antonio', 'juan', 'pedro', 'manuel', 'jose', 'francisco',
+                  'es-es', 'es_es', 'spanish', 'español'
+                ];
+                
+                final mightBeMale = commonMaleNames.any((name) => voiceName.contains(name));
+                
+                if (mightBeMale || selectedVoice == null) {
+                  selectedVoice = voice;
+                  print('[PokemonDetailScreen] ✅ Voz en castellano seleccionada: ${voice['name']} (${voice['locale']})');
+                  // Continuar buscando por si hay una mejor opción
+                }
+              }
+            }
+          }
+          
+          // Prioridad 3: Cualquier voz en español como último recurso
+          if (selectedVoice == null) {
+            for (final voice in voices) {
+              final voiceLocale = voice['locale']?.toString().toLowerCase() ?? '';
+              if (voiceLocale.startsWith('es')) {
+                selectedVoice = voice;
+                print('[PokemonDetailScreen] ⚠️ Usando cualquier voz en español: ${voice['name']} (${voice['locale']})');
+                break;
+              }
+            }
+          }
+          
+          // Configurar la voz seleccionada
+          if (selectedVoice != null && selectedVoice['name'] != null) {
+            await _flutterTts.setVoice({
+              'name': selectedVoice['name'], 
+              'locale': selectedVoice['locale'] ?? locale
+            });
+            print('[PokemonDetailScreen] ✅ Voz TTS configurada: ${selectedVoice['name']} (${selectedVoice['locale']})');
+          } else {
+            print('[PokemonDetailScreen] ⚠️ No se encontró voz adecuada, usando configuración por defecto');
+          }
+        } else {
+          print('[PokemonDetailScreen] ⚠️ No hay voces disponibles');
         }
       } catch (e) {
+        print('[PokemonDetailScreen] ⚠️ No se pudo configurar voz específica: $e');
         // Si no está disponible, continuar con el motor por defecto
+        // Los parámetros de pitch y rate ya están configurados para sonar robótico
       }
+      
       setState(() {
         _audioInitialized = true;
       });
+      
+      print('[PokemonDetailScreen] ✅ TTS inicializado: idioma=es-ES, rate=0.2, pitch=0.1');
     } catch (e) {
+      print('[PokemonDetailScreen] ⚠️ Error inicializando TTS: $e');
       // Si falla, continuar sin TTS
+      setState(() {
+        _audioInitialized = false;
+      });
     }
   }
 
@@ -143,27 +226,30 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
       _moves = await pokemonDao.getPokemonMoves(_pokemon!.id);
       
       // Obtener tipos y clases de daño de los movimientos
+      // OPTIMIZACIÓN: Cargar todos los tipos y clases de daño UNA VEZ antes del loop
       _moveTypes.clear();
       _moveDamageClasses.clear();
-      for (final move in _moves) {
-        // Obtener tipo del movimiento
-        if (move.typeId != null) {
-          final allTypes = await widget.database.select(widget.database.types).get();
-          final moveType = allTypes.firstWhere(
-            (t) => t.id == move.typeId,
-            orElse: () => allTypes.first, // Fallback (no debería pasar)
-          );
-          _moveTypes[move.id] = moveType;
-        }
+      
+      if (_moves.isNotEmpty) {
+        // Cargar todos los tipos y clases de daño de una vez
+        final allTypes = await widget.database.select(widget.database.types).get();
+        final allDamageClasses = await widget.database.select(widget.database.moveDamageClasses).get();
         
-        // Obtener clase de daño del movimiento
-        if (move.damageClassId != null) {
-          final allDamageClasses = await widget.database.select(widget.database.moveDamageClasses).get();
-          final damageClass = allDamageClasses.firstWhere(
-            (dc) => dc.id == move.damageClassId,
-            orElse: () => allDamageClasses.first, // Fallback
-          );
-          _moveDamageClasses[move.id] = damageClass.name;
+        // Crear mapas para búsqueda rápida
+        final typesMap = {for (var t in allTypes) t.id: t};
+        final damageClassesMap = {for (var dc in allDamageClasses) dc.id: dc};
+        
+        for (final move in _moves) {
+          // Obtener tipo del movimiento
+          if (move.typeId != null) {
+            _moveTypes[move.id] = typesMap[move.typeId];
+          }
+          
+          // Obtener clase de daño del movimiento
+          if (move.damageClassId != null) {
+            final damageClass = damageClassesMap[move.damageClassId];
+            _moveDamageClasses[move.id] = damageClass?.name;
+          }
         }
       }
       
@@ -184,50 +270,58 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
         
         if (_species!.flavorTextEntriesJson != null && 
             _species!.flavorTextEntriesJson!.isNotEmpty) {
-          // Obtener descripción (puede ser corta o larga, usaremos la primera disponible)
+          // Obtener descripción (flavor_text) en el idioma configurado
           _description = await _translationService.getFlavorText(
             flavorTextEntriesJson: _species!.flavorTextEntriesJson!,
           );
-          // Por ahora, usar la misma descripción para corta y larga
-          // TODO: Separar descripción corta y larga si hay múltiples entradas
-          _shortDescription = _description;
-          _longDescription = _description;
         }
         
         // Obtener evoluciones
         _evolutions = await _loadEvolutions(_species!);
+        
+        // Cargar variantes de TODA la gama evolutiva (evoluciones + preevoluciones + pokemon actual)
+        await _loadAllEvolutionVariants();
       } else {
         _pokemonName = _pokemon!.name;
       }
       
-      // Obtener variantes normales (con pokedex)
+      // Obtener variantes normales (con pokedex) - solo del pokemon actual
       final variantRelations = await variantsDao.getVariantsForPokemon(_pokemon!.id);
+      final pokedexDao = PokedexDao(widget.database);
+      
+      // OPTIMIZACIÓN: Cargar todas las entradas de pokedex de una vez
+      final allPokedex = await pokedexDao.getAllPokedex();
+      final Map<int, Set<int>> pokedexEntriesMap = {}; // pokedexId -> Set<pokemonId>
+      for (final pokedex in allPokedex) {
+        final entries = await pokedexDao.getPokedexEntries(pokedex.id);
+        pokedexEntriesMap[pokedex.id] = entries.map((e) => e.pokemonId).toSet();
+      }
+      
+      // Función helper para verificar si un pokemon tiene pokedex
+      bool hasPokedexEntry(int pokemonId) {
+        for (final entries in pokedexEntriesMap.values) {
+          if (entries.contains(pokemonId)) {
+            return true;
+          }
+        }
+        return false;
+      }
+      
       if (variantRelations.isNotEmpty) {
         final variantIds = variantRelations.map((v) => v.variantPokemonId).toList();
-        final pokedexDao = PokedexDao(widget.database);
         
-        for (final variantId in variantIds) {
-          final variant = await pokemonDao.getPokemonById(variantId);
-          if (variant != null) {
-            // Verificar si tiene pokedex asignada
-            final species = await pokemonDao.getSpeciesByPokemonId(variantId);
-            if (species != null) {
-              final allPokedex = await pokedexDao.getAllPokedex();
-              bool hasPokedex = false;
-              for (final pokedex in allPokedex) {
-                    final entries = await pokedexDao.getPokedexEntries(pokedex.id);
-                    if (entries.any((e) => e.pokemonSpeciesId == species.id)) {
-                      hasPokedex = true;
-                      break;
-                    }
-              }
-              
-              if (hasPokedex) {
-                _variants.add(variant);
-              } else if (_isSpecialVariant(variant.name)) {
-                _specialVariants.add(variant);
-              }
-            }
+        // OPTIMIZACIÓN: Cargar todos los pokemons de una vez
+        final variantPokemons = await Future.wait(
+          variantIds.map((id) => pokemonDao.getPokemonById(id)),
+        );
+        
+        for (final variant in variantPokemons) {
+          if (variant == null) continue;
+          
+          if (hasPokedexEntry(variant.id)) {
+            _variants.add(variant);
+          } else if (_isSpecialVariant(variant.name)) {
+            _specialVariants.add(variant);
           }
         }
       }
@@ -241,32 +335,19 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
           final allVariants = await variantsDao.getVariantsForPokemon(defaultId);
           final variantIds = allVariants.map((v) => v.variantPokemonId).toList();
           variantIds.add(defaultId);
-          final pokedexDao = PokedexDao(widget.database);
           
-          for (final variantId in variantIds) {
-            if (variantId != _pokemon!.id) {
-              final variant = await pokemonDao.getPokemonById(variantId);
-              if (variant != null) {
-                // Verificar si tiene pokedex asignada
-                final species = await pokemonDao.getSpeciesByPokemonId(variantId);
-                if (species != null) {
-                  final allPokedex = await pokedexDao.getAllPokedex();
-                  bool hasPokedex = false;
-                  for (final pokedex in allPokedex) {
-                    final entries = await pokedexDao.getPokedexEntries(pokedex.id);
-                    if (entries.any((e) => e.pokemonSpeciesId == species.id)) {
-                      hasPokedex = true;
-                      break;
-                    }
-                  }
-                  
-                  if (hasPokedex) {
-                    _variants.add(variant);
-                  } else if (_isSpecialVariant(variant.name)) {
-                    _specialVariants.add(variant);
-                  }
-                }
-              }
+          // OPTIMIZACIÓN: Cargar todos los pokemons de una vez
+          final variantPokemons = await Future.wait(
+            variantIds.where((id) => id != _pokemon!.id).map((id) => pokemonDao.getPokemonById(id)),
+          );
+          
+          for (final variant in variantPokemons) {
+            if (variant == null) continue;
+            
+            if (hasPokedexEntry(variant.id)) {
+              _variants.add(variant);
+            } else if (_isSpecialVariant(variant.name)) {
+              _specialVariants.add(variant);
             }
           }
         }
@@ -401,17 +482,19 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
           );
         }
         
-        // Leer nombre
-        await speakAndWait(_pokemonName!);
-        
-        // Leer descripción corta si existe
-        if (_shortDescription != null && _shortDescription!.isNotEmpty) {
-          await speakAndWait(_shortDescription!);
+        // Leer nombre del pokemon
+        if (_pokemonName != null && _pokemonName!.isNotEmpty) {
+          await speakAndWait(_pokemonName!);
         }
         
-        // Leer descripción larga si existe
-        if (_longDescription != null && _longDescription!.isNotEmpty) {
-          await speakAndWait(_longDescription!);
+        // Leer genus si existe
+        if (_genus != null && _genus!.isNotEmpty) {
+          await speakAndWait(_genus!);
+        }
+        
+        // Leer flavor_text (descripción) si existe
+        if (_description != null && _description!.isNotEmpty) {
+          await speakAndWait(_description!);
         }
       } catch (e) {
         // Si falla, continuar
@@ -435,69 +518,125 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
     super.dispose();
   }
 
-  String? _getBestSvgImage() {
-    return PokemonImageHelper.getBestImagePath(_pokemon, preferShiny: _isShiny);
-  }
-  
-  bool _hasShinyImage() {
-    return PokemonImageHelper.hasShinyImage(_pokemon);
-  }
-  
-  void _toggleShiny() {
-    if (_hasShinyImage()) {
-      setState(() {
-        _isShiny = !_isShiny;
-      });
-    }
-  }
 
+  /// Cargar evoluciones usando la evolution chain de la especie
+  /// Usa la función helper del DAO que procesa la evolution chain
   Future<List<PokemonData>> _loadEvolutions(PokemonSpecy species) async {
     if (species.evolutionChainId == null) return [];
     
     try {
       final pokemonDao = PokemonDao(widget.database);
       
-      final evolutionChain = await (widget.database.select(widget.database.evolutionChains)
-        ..where((t) => t.apiId.equals(species.evolutionChainId!)))
-        .getSingleOrNull();
+      // Obtener todas las especies relacionadas de la evolution chain
+      final relatedSpecies = await pokemonDao.getRelatedSpecies(species);
       
-      if (evolutionChain == null || evolutionChain.chainJson == null) {
-        return [];
-      }
-      
-      final chainData = jsonDecode(evolutionChain.chainJson!) as Map<String, dynamic>;
+      // Obtener el pokemon default de cada especie relacionada (excluyendo la actual)
       final List<PokemonData> evolutions = [];
-      final List<Future<PokemonData?>> evolutionFutures = [];
       
-      void extractSpecies(Map<String, dynamic> chain) {
-        final speciesInfo = chain['species'] as Map<String, dynamic>?;
-        if (speciesInfo != null) {
-          final speciesName = speciesInfo['name'] as String?;
-          if (speciesName != null && speciesName != _species?.name) {
-            evolutionFutures.add(pokemonDao.getPokemonByName(speciesName));
-          }
-        }
+      for (final relatedSpecy in relatedSpecies) {
+        if (relatedSpecy.id == species.id) continue; // Excluir la especie actual
         
-        final evolvesTo = chain['evolves_to'] as List?;
-        if (evolvesTo != null) {
-          for (final nextChain in evolvesTo) {
-            extractSpecies(nextChain as Map<String, dynamic>);
-          }
-        }
-      }
-      
-      extractSpecies(chainData);
-      
-      final results = await Future.wait(evolutionFutures);
-      for (final pokemon in results) {
-        if (pokemon != null) {
-          evolutions.add(pokemon);
-        }
+        // Obtener el pokemon default de esta especie
+        final pokemons = await pokemonDao.getPokemonBySpecies(relatedSpecy.id);
+        if (pokemons.isEmpty) continue;
+        
+        final defaultPokemon = pokemons.firstWhere(
+          (p) => p.isDefault,
+          orElse: () => pokemons.first,
+        );
+        
+        evolutions.add(defaultPokemon);
       }
       
       return evolutions;
     } catch (e) {
       return [];
+    }
+  }
+  
+  /// Cargar TODAS las variantes (con y sin pokedex) de TODA la gama evolutiva
+  /// Usa las evolution chains para obtener todas las especies relacionadas
+  /// Reglas:
+  /// - Si son variantes con pokedex, solo mostrar la default: true
+  /// - Si son variantes sin pokedex, mostrar todas
+  Future<void> _loadAllEvolutionVariants() async {
+    _allEvolutionVariants.clear();
+    
+    try {
+      final pokemonDao = PokemonDao(widget.database);
+      final variantsDao = PokemonVariantsDao(widget.database);
+      final pokedexDao = PokedexDao(widget.database);
+      
+      if (_species == null || _species!.evolutionChainId == null) {
+        return;
+      }
+      
+      // Obtener todas las especies relacionadas de la evolution chain
+      final relatedSpecies = await pokemonDao.getRelatedSpecies(_species!);
+      
+      // Para cada especie relacionada, buscar TODAS sus variantes
+      final Set<int> addedVariantIds = {}; // Para evitar duplicados
+      final allPokedex = await pokedexDao.getAllPokedex();
+      
+      for (final relatedSpecy in relatedSpecies) {
+        // Obtener todos los pokemons de esta especie (incluyendo el default)
+        final allSpeciesPokemons = await pokemonDao.getPokemonBySpecies(relatedSpecy.id);
+        if (allSpeciesPokemons.isEmpty) continue;
+        
+        final defaultPokemon = allSpeciesPokemons.firstWhere(
+          (p) => p.isDefault,
+          orElse: () => allSpeciesPokemons.first,
+        );
+        
+        // Obtener variantes del pokemon default
+        final variantRelations = await variantsDao.getVariantsForPokemon(defaultPokemon.id);
+        
+        // Verificar si alguna variante tiene pokedex
+        final Set<int> variantsWithPokedex = {};
+        
+        for (final variantRelation in variantRelations) {
+          final variantId = variantRelation.variantPokemonId;
+          final variant = await pokemonDao.getPokemonById(variantId);
+          if (variant == null) continue;
+          
+          // Verificar si esta variante tiene pokedex
+          for (final pokedex in allPokedex) {
+            final entries = await pokedexDao.getPokedexEntries(pokedex.id);
+            if (entries.any((e) => e.pokemonId == variantId)) {
+              variantsWithPokedex.add(variantId);
+              break;
+            }
+          }
+        }
+        
+        // Si hay variantes con pokedex, solo mostrar el default
+        // Si no hay variantes con pokedex, mostrar todas las variantes
+        if (variantsWithPokedex.isNotEmpty) {
+          // Solo mostrar el default si no está ya añadido y no es el pokemon actual
+          if (!addedVariantIds.contains(defaultPokemon.id) && 
+              defaultPokemon.id != _pokemon?.id) {
+            _allEvolutionVariants.add(defaultPokemon);
+            addedVariantIds.add(defaultPokemon.id);
+          }
+        } else {
+          // Mostrar todas las variantes (sin pokedex)
+          for (final variantRelation in variantRelations) {
+            final variantId = variantRelation.variantPokemonId;
+            
+            if (addedVariantIds.contains(variantId)) {
+              continue;
+            }
+            
+            final variant = await pokemonDao.getPokemonById(variantId);
+            if (variant != null) {
+              _allEvolutionVariants.add(variant);
+              addedVariantIds.add(variantId);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('[PokemonDetailScreen] ⚠️ Error cargando variantes de gama evolutiva: $e');
     }
   }
 
@@ -666,55 +805,55 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Región y pokedex en la parte superior
+                // 1. Región y pokedex en la parte superior
                 _buildRegionAndPokedex(),
                 
                 const SizedBox(height: 16),
                 
-                // Imagen del pokemon (con toggle shiny al pulsar)
-                _buildImage(),
-                
-                const SizedBox(height: 16),
-                
-                // Nombre con primera letra mayúscula, #posición pokedex (nacional entre paréntesis)
+                // 2. Nombre con primera letra mayúscula, #posición pokedex (nacional entre paréntesis)
                 _buildPokemonName(),
                 
                 const SizedBox(height: 16),
                 
-                // Tipos (horizontal)
+                // 3. Imagen del pokemon (con toggle shiny al pulsar)
+                _buildImage(),
+                
+                const SizedBox(height: 16),
+                
+                // 4. Tipos (horizontal)
                 if (_types.isNotEmpty) ...[
                   _buildTypesHorizontal(),
                   const SizedBox(height: 16),
                 ],
                 
-                // Altura, peso y habilidad en la misma fila
+                // 5. Altura, peso y habilidad en la misma fila
                 _buildInfo(),
                 
                 const SizedBox(height: 16),
                 
-                // Descripción
+                // 6. Descripción
                 if (_description != null && _description!.isNotEmpty) ...[
                   _buildDescription(),
                   const SizedBox(height: 16),
                 ],
                 
-                // Estadísticas
+                // 7. Estadísticas
                 _buildStatsSection(),
                 
                 const SizedBox(height: 16),
                 
-                // Evoluciones (pre y post)
+                // 8. Evoluciones (pre y post)
                 _buildEvolutionsSection(),
                 
                 const SizedBox(height: 16),
                 
-                // Variantes especiales (mega, gigamax, primal sin pokedex)
-                if (_specialVariants.isNotEmpty) ...[
-                  _buildSpecialVariantsSection(),
+                // 9. Variantes (con y sin pokedex) - para TODA la gama evolutiva
+                if (_allEvolutionVariants.isNotEmpty) ...[
+                  _buildVariantsSection(_allEvolutionVariants),
                   const SizedBox(height: 16),
                 ],
                 
-                // Movimientos (acordeón)
+                // 10. Movimientos (acordeón)
                 _buildMovesSection(),
               ],
             ),
@@ -838,12 +977,17 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
 
 
   Widget _buildImage() {
-    final imageUrl = _getBestSvgImage();
-    final hasShiny = _hasShinyImage();
+    // Usar front_transparent por defecto, con toggle para cambiar entre tipos
+    final imagePathFuture = PokemonImageHelper.getBestImagePath(
+      _pokemon,
+      appConfig: widget.appConfig,
+      database: widget.database,
+      imageType: _currentImageType,
+    );
     
     return Center(
       child: GestureDetector(
-        onTap: hasShiny ? _toggleShiny : null,
+        onTap: _toggleImageType,
         child: Container(
           width: 300,
           height: 300,
@@ -851,20 +995,38 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
             color: Colors.transparent,
             borderRadius: BorderRadius.circular(12),
           ),
-          child: PokemonImage(
-            imagePath: imageUrl,
-            fit: BoxFit.contain,
-            width: 300,
-            height: 300,
-            errorWidget: const Icon(
-              Icons.catching_pokemon,
-              size: 150,
-              color: Colors.white,
-            ),
+          child: FutureBuilder<String?>(
+            future: imagePathFuture,
+            builder: (context, snapshot) {
+              return PokemonImage(
+                imagePath: snapshot.data,
+                fit: BoxFit.contain,
+                width: 300,
+                height: 300,
+                errorWidget: const Icon(
+                  Icons.catching_pokemon,
+                  size: 150,
+                  color: Colors.white,
+                ),
+              );
+            },
           ),
         ),
       ),
     );
+  }
+  
+  void _toggleImageType() {
+    setState(() {
+      // Ciclar entre: front_transparent -> front_shiny_transparent -> front_gray -> front_transparent
+      if (_currentImageType == 'front_transparent') {
+        _currentImageType = 'front_shiny_transparent';
+      } else if (_currentImageType == 'front_shiny_transparent') {
+        _currentImageType = 'front_gray';
+      } else {
+        _currentImageType = 'front_transparent';
+      }
+    });
   }
 
   Widget _buildTypesHorizontal() {
@@ -1322,7 +1484,7 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
   }
 
   Widget _buildEvolutionCard(PokemonData evolution) {
-    final imageUrl = _getBestImageForPokemon(evolution);
+    final imageUrlFuture = _getBestImageForPokemon(evolution);
     
     return GestureDetector(
       onTap: () {
@@ -1341,53 +1503,23 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
       child: Container(
         width: 120,
         margin: const EdgeInsets.only(right: 12),
-        child: _buildPokemonCard(
-          pokemon: evolution,
-          imageUrl: imageUrl,
+        child: FutureBuilder<String?>(
+          future: imageUrlFuture,
+          builder: (context, snapshot) {
+            return _buildPokemonCard(
+              pokemon: evolution,
+              imageUrl: snapshot.data,
+            );
+          },
         ),
       ),
     );
   }
 
-  Widget _buildSpecialVariantsSection() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Variantes Especiales',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-              shadows: [
-                Shadow(
-                  color: Colors.black,
-                  blurRadius: 3,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            height: 150,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: _specialVariants.length,
-              itemBuilder: (context, index) {
-                final variant = _specialVariants[index];
-                return _buildVariantCard(variant);
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 
-  Widget _buildVariantsSection() {
-    if (_variants.isEmpty) {
+  Widget _buildVariantsSection([List<PokemonData>? variants]) {
+    final variantsToShow = variants ?? _variants;
+    if (variantsToShow.isEmpty) {
       return const SizedBox.shrink();
     }
     
@@ -1415,9 +1547,9 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
             height: 150,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
-              itemCount: _variants.length,
+              itemCount: variantsToShow.length,
               itemBuilder: (context, index) {
-                final variant = _variants[index];
+                final variant = variantsToShow[index];
                 return _buildVariantCard(variant);
               },
             ),
@@ -1428,7 +1560,7 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
   }
 
   Widget _buildVariantCard(PokemonData variant) {
-    final imageUrl = _getBestImageForPokemon(variant);
+    final imageUrlFuture = _getBestImageForPokemon(variant);
     
     return GestureDetector(
       onTap: () {
@@ -1447,16 +1579,27 @@ class _PokemonDetailScreenState extends State<PokemonDetailScreen> {
       child: Container(
         width: 120,
         margin: const EdgeInsets.only(right: 12),
-        child: _buildPokemonCard(
-          pokemon: variant,
-          imageUrl: imageUrl,
+        child: FutureBuilder<String?>(
+          future: imageUrlFuture,
+          builder: (context, snapshot) {
+            return _buildPokemonCard(
+              pokemon: variant,
+              imageUrl: snapshot.data,
+            );
+          },
         ),
       ),
     );
   }
 
-  String? _getBestImageForPokemon(PokemonData pokemon) {
-    return PokemonImageHelper.getBestImagePath(pokemon);
+  Future<String?> _getBestImageForPokemon(PokemonData pokemon) async {
+    // Para evolutions y variants, usar front_transparent si hay configuración
+    return await PokemonImageHelper.getBestImagePath(
+      pokemon,
+      appConfig: widget.appConfig,
+      database: widget.database,
+      imageType: 'front_transparent',
+    );
   }
 
   Widget _buildPokemonCard({

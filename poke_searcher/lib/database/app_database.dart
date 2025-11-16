@@ -36,6 +36,31 @@ import 'tables/move_damage_classes.dart';
 import 'tables/item_categories.dart';
 import 'tables/item_pockets.dart';
 import 'tables/pokemon_variants.dart';
+import 'tables/berries.dart';
+import 'tables/berry_firmness.dart';
+import 'tables/berry_flavor.dart';
+import 'tables/characteristics.dart';
+import 'tables/contest_effects.dart';
+import 'tables/contest_types.dart';
+import 'tables/encounter_conditions.dart';
+import 'tables/encounter_condition_values.dart';
+import 'tables/encounter_methods.dart';
+import 'tables/genders.dart';
+import 'tables/item_attributes.dart';
+import 'tables/item_fling_effects.dart';
+import 'tables/locations.dart';
+import 'tables/location_areas.dart';
+import 'tables/machines.dart';
+import 'tables/move_ailments.dart';
+import 'tables/move_battle_styles.dart';
+import 'tables/move_categories.dart';
+import 'tables/move_learn_methods.dart';
+import 'tables/move_targets.dart';
+import 'tables/pal_park_areas.dart';
+import 'tables/pokeathlon_stats.dart';
+import 'tables/pokemon_forms.dart';
+import 'tables/super_contest_effects.dart';
+import 'tables/versions.dart';
 // Vista temporalmente deshabilitada hasta implementar correctamente
 // import 'views/region_summary_view.dart';
 import 'daos/region_dao.dart';
@@ -47,6 +72,8 @@ import 'daos/ability_dao.dart';
 import 'daos/item_dao.dart';
 import 'daos/language_dao.dart';
 import 'daos/pokemon_variants_dao.dart';
+import 'daos/generation_dao.dart';
+import 'daos/version_group_dao.dart';
 
 part 'app_database.g.dart';
 
@@ -82,6 +109,31 @@ part 'app_database.g.dart';
   ItemCategories,
   ItemPockets,
   PokemonVariants,
+  Berries,
+  BerryFirmness,
+  BerryFlavor,
+  Characteristics,
+  ContestEffects,
+  ContestTypes,
+  EncounterConditions,
+  EncounterConditionValues,
+  EncounterMethods,
+  Genders,
+  ItemAttributes,
+  ItemFlingEffects,
+  Locations,
+  LocationAreas,
+  Machines,
+  MoveAilments,
+  MoveBattleStyles,
+  MoveCategories,
+  MoveLearnMethods,
+  MoveTargets,
+  PalParkAreas,
+  PokeathlonStats,
+  PokemonForms,
+  SuperContestEffects,
+  Versions,
   ],
   // views: [
   //   RegionSummaryView,  // Temporalmente deshabilitada
@@ -123,6 +175,9 @@ class AppDatabase extends _$AppDatabase {
     await customStatement('CREATE INDEX IF NOT EXISTS idx_moves_name ON moves(name)');
     await customStatement('CREATE INDEX IF NOT EXISTS idx_abilities_name ON abilities(name)');
     await customStatement('CREATE INDEX IF NOT EXISTS idx_items_name ON items(name)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_berries_name ON berries(name)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_locations_name ON locations(name)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_versions_name ON versions(name)');
     
     // Índices para foreign keys
     await customStatement('CREATE INDEX IF NOT EXISTS idx_regions_main_generation ON regions(main_generation_id)');
@@ -135,8 +190,23 @@ class AppDatabase extends _$AppDatabase {
     await customStatement('CREATE INDEX IF NOT EXISTS idx_pokemon_moves_pokemon ON pokemon_moves(pokemon_id)');
     await customStatement('CREATE INDEX IF NOT EXISTS idx_pokemon_moves_move ON pokemon_moves(move_id)');
     await customStatement('CREATE INDEX IF NOT EXISTS idx_pokedex_entries_pokedex ON pokedex_entries(pokedex_id)');
-    await customStatement('CREATE INDEX IF NOT EXISTS idx_pokedex_entries_species ON pokedex_entries(pokemon_species_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_pokedex_entries_pokemon ON pokedex_entries(pokemon_id)');
     await customStatement('CREATE INDEX IF NOT EXISTS idx_pokedex_region ON pokedex(region_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_berries_firmness ON berries(firmness_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_berries_item ON berries(item_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_berries_type ON berries(natural_gift_type_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_location_region ON locations(region_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_location_area_location ON location_areas(location_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_machine_item ON machines(item_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_machine_move ON machines(move_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_machine_version_group ON machines(version_group_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_pokemon_form_pokemon ON pokemon_forms(pokemon_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_pokemon_form_version_group ON pokemon_forms(version_group_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_version_version_group ON versions(version_group_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_encounter_condition_value_condition ON encounter_condition_values(condition_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_characteristics_stat ON characteristics(highest_stat_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_berry_flavor_contest_type ON berry_flavor(contest_type_id)');
+    await customStatement('CREATE INDEX IF NOT EXISTS idx_contest_type_berry_flavor ON contest_types(berry_flavor_id)');
     
     // Índices para traducciones
     await customStatement('CREATE INDEX IF NOT EXISTS idx_localized_names_entity ON localized_names(entity_type, entity_id, language_id)');
@@ -164,6 +234,8 @@ class AppDatabase extends _$AppDatabase {
   ItemDao get itemDao => ItemDao(this);
   LanguageDao get languageDao => LanguageDao(this);
   PokemonVariantsDao get pokemonVariantsDao => PokemonVariantsDao(this);
+  GenerationDao get generationDao => GenerationDao(this);
+  VersionGroupDao get versionGroupDao => VersionGroupDao(this);
 }
 
 LazyDatabase _openConnection() {

@@ -11,6 +11,7 @@ class Regions extends Table {
   TextColumn get locationsJson => text().nullable()();
   TextColumn get pokedexesJson => text().nullable()();
   TextColumn get versionGroupsJson => text().nullable()();
+  TextColumn get processedStartersJson => text().nullable()(); // Lista de nombres de iniciales procesados
   
   @override
   Set<Column> get primaryKey => {id};

@@ -181,8 +181,13 @@ class _RegionsScreenState extends State<RegionsScreen> {
   }
   
   /// Obtener la mejor imagen disponible para un pokemon desde assets
-  String? _getBestImagePath(PokemonData? pokemon) {
-    return PokemonImageHelper.getBestImagePath(pokemon);
+  Future<String?> _getBestImagePath(PokemonData? pokemon) async {
+    return await PokemonImageHelper.getBestImagePath(
+      pokemon,
+      appConfig: widget.appConfig,
+      database: widget.database,
+      imageType: 'front_transparent',
+    );
   }
 
   @override
@@ -396,7 +401,6 @@ class _RegionsScreenState extends State<RegionsScreen> {
                   children: List.generate(3, (i) {
                     final starters = _starterPokemons[region.id] ?? [];
                     final pokemon = i < starters.length ? starters[i] : null;
-                    final imagePath = _getBestImagePath(pokemon);
                     
                     return Container(
                       margin: const EdgeInsets.symmetric(horizontal: 8),
@@ -412,16 +416,21 @@ class _RegionsScreenState extends State<RegionsScreen> {
                       ),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(9),
-                        child: PokemonImage(
-                          imagePath: imagePath,
-                          width: 100,
-                          height: 100,
-                          fit: BoxFit.contain,
-                          errorWidget: const Icon(
-                            Icons.catching_pokemon,
-                            color: Colors.white,
-                            size: 50,
-                          ),
+                        child: FutureBuilder<String?>(
+                          future: _getBestImagePath(pokemon),
+                          builder: (context, snapshot) {
+                            return PokemonImage(
+                              imagePath: snapshot.data,
+                              width: 100,
+                              height: 100,
+                              fit: BoxFit.contain,
+                              errorWidget: const Icon(
+                                Icons.catching_pokemon,
+                                color: Colors.white,
+                                size: 50,
+                              ),
+                            );
+                          },
                         ),
                       ),
                     );

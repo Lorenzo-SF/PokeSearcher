@@ -1,10 +1,11 @@
 import 'package:drift/drift.dart';
 
-/// Relación entre Pokedex y Pokemon Species
+/// Relación entre Pokedex y Pokemon (específicos, no especies)
+/// Permite asignar pokemons específicos (ej: slowpoke vs slowpoke-galar) a diferentes pokedexes
 class PokedexEntries extends Table {
   IntColumn get id => integer().autoIncrement()();
   IntColumn get pokedexId => integer()();
-  IntColumn get pokemonSpeciesId => integer()();
+  IntColumn get pokemonId => integer()(); // Pokemon específico (no especie)
   IntColumn get entryNumber => integer()();
   
   @override
@@ -12,7 +13,7 @@ class PokedexEntries extends Table {
   
   @override
   List<Set<Column>> get uniqueKeys => [
-    {pokedexId, pokemonSpeciesId}
+    {pokedexId, pokemonId}
   ];
 }
 

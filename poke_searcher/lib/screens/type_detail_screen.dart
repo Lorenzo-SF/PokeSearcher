@@ -4,6 +4,8 @@ import '../database/app_database.dart';
 import '../services/config/app_config.dart';
 import '../database/daos/type_dao.dart';
 import '../utils/color_generator.dart';
+import '../utils/type_image_helper.dart';
+import 'pokemon_list_screen.dart';
 
 class TypeDetailScreen extends StatefulWidget {
   final AppDatabase database;
@@ -117,35 +119,73 @@ class _TypeDetailScreenState extends State<TypeDetailScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Cápsula del tipo (arriba)
+                // Imagen del tipo (arriba)
                 Center(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                    decoration: BoxDecoration(
-                      color: typeColor,
-                      borderRadius: BorderRadius.circular(30),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.3),
-                          blurRadius: 8,
-                          spreadRadius: 2,
+                  child: FutureBuilder<String?>(
+                    future: TypeImageHelper.getTypeImagePathFromConfig(
+                      typeApiId: _type!.apiId,
+                      typeName: _type!.name,
+                      appConfig: widget.appConfig,
+                      database: widget.database,
+                    ),
+                    builder: (context, snapshot) {
+                      final imagePath = snapshot.data ?? 'assets/types/${_type!.name.toLowerCase()}.png';
+                      final colorHex = _type!.color;
+                      final fallbackColor = colorHex != null 
+                          ? Color(ColorGenerator.hexToColor(colorHex))
+                          : Colors.grey;
+                      
+                      return Container(
+                        width: 200,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.3),
+                              blurRadius: 8,
+                              spreadRadius: 2,
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                    child: Text(
-                      _type!.name,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 28,
-                        shadows: [
-                          Shadow(
-                            color: Colors.black,
-                            blurRadius: 3,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.asset(
+                            imagePath,
+                            width: 200,
+                            height: 40,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) {
+                              // Fallback: mostrar color de fondo con nombre
+                              return Container(
+                                width: 200,
+                                height: 40,
+                                decoration: BoxDecoration(
+                                  color: fallbackColor,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Center(
+                                  child: Text(
+                                    _type!.name,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                      shadows: [
+                                        Shadow(
+                                          color: Colors.black,
+                                          blurRadius: 2,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
                           ),
-                        ],
-                      ),
-                    ),
+                        ),
+                      );
+                    },
                   ),
                 ),
                 
@@ -208,7 +248,48 @@ class _TypeDetailScreenState extends State<TypeDetailScreen> {
                     types: _noDamageFrom,
                     color: Colors.purple,
                   ),
+                  const SizedBox(height: 24),
                 ],
+                
+                // Botón para mostrar Pokémon de este tipo
+                Center(
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (context) => PokemonListScreen(
+                            database: widget.database,
+                            appConfig: widget.appConfig,
+                            regionId: null,
+                            regionName: 'Nacional',
+                            typeId: widget.typeId,
+                          ),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.list, color: Colors.white),
+                    label: const Text(
+                      'Mostrar Pokémon de este tipo',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: typeColor,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 16,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                      elevation: 8,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
               ],
             ),
           ),
@@ -296,38 +377,71 @@ class _TypeDetailScreenState extends State<TypeDetailScreen> {
           spacing: 12,
           runSpacing: 12,
           children: types.map((type) {
-            final colorHex = type.color;
-            final typeColor = colorHex != null 
-                ? Color(ColorGenerator.hexToColor(colorHex))
-                : Colors.grey;
-            
-            return Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-              decoration: BoxDecoration(
-                color: typeColor,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.2),
-                    blurRadius: 4,
-                    spreadRadius: 1,
+            return FutureBuilder<String?>(
+              future: TypeImageHelper.getTypeImagePathFromConfig(
+                typeApiId: type.apiId,
+                typeName: type.name,
+                appConfig: widget.appConfig,
+                database: widget.database,
+              ),
+              builder: (context, snapshot) {
+                final imagePath = snapshot.data ?? 'assets/types/${type.name.toLowerCase()}.png';
+                final colorHex = type.color;
+                final typeColor = colorHex != null 
+                    ? Color(ColorGenerator.hexToColor(colorHex))
+                    : Colors.grey;
+                
+                return Container(
+                  width: 200,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.2),
+                        blurRadius: 4,
+                        spreadRadius: 1,
+                      ),
+                    ],
                   ),
-                ],
-              ),
-              child: Text(
-                type.name,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                  shadows: [
-                    Shadow(
-                      color: Colors.black,
-                      blurRadius: 2,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.asset(
+                      imagePath,
+                      width: 200,
+                      height: 40,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        // Fallback: mostrar color de fondo con nombre
+                        return Container(
+                          width: 200,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: typeColor,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Center(
+                            child: Text(
+                              type.name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                                shadows: [
+                                  Shadow(
+                                    color: Colors.black,
+                                    blurRadius: 2,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
                     ),
-                  ],
-                ),
-              ),
+                  ),
+                );
+              },
             );
           }).toList(),
         ),

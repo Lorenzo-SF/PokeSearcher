@@ -21,158 +21,131 @@ class MediaPathHelper {
     return dataDir;
   }
   
-  /// Convertir ruta de asset (ej: "assets/media/pokemon/1/artwork_official.png" o "media/pokemon/1/artwork_official.png")
-  /// a ruta de archivo local
+  /// Transformar ruta con estructura de directorios a ruta aplanada real
+  /// Funciona para TODOS los tipos de archivos multimedia: png, svg, ogg, mp3, jpg, jpeg, gif, webp, etc.
+  /// Ejemplos:
+  ///   - "media/pokemon/4/sprite_front_default.svg" -> "media_pokemon_4_sprite_front_default.svg"
+  ///   - "media/pokemon/4/cry_latest.ogg" -> "media_pokemon_4_cry_latest.ogg"
+  ///   - "media/item/101/helix-fossil.png" -> "media_item_101_helix-fossil.png"
+  /// Flutter aplanará los nombres al extraer, así que necesitamos transformar la ruta buscada
+  static String _flattenPath(String originalPath) {
+    // Remover prefijo "assets/" si existe
+    String cleanPath = originalPath;
+    if (cleanPath.startsWith('assets/')) {
+      cleanPath = cleanPath.substring(7);
+    }
+    
+    // Si ya es una ruta absoluta, extraer solo la parte relativa
+    if (cleanPath.startsWith('/')) {
+      // Buscar la parte después de poke_searcher_data
+      final dataIndex = cleanPath.indexOf('poke_searcher_data/');
+      if (dataIndex != -1) {
+        cleanPath = cleanPath.substring(dataIndex + 'poke_searcher_data/'.length);
+      } else {
+        // Si no tiene poke_searcher_data, tomar solo el nombre del archivo
+        return path.basename(cleanPath);
+      }
+    }
+    
+    // Normalizar separadores de ruta
+    cleanPath = cleanPath.replaceAll('\\', '/');
+    
+    // Si la ruta tiene estructura (ej: "media/pokemon/4/sprite_front_default.svg")
+    // Transformarla a nombre aplanado (ej: "media_pokemon_4_sprite_front_default.svg")
+    if (cleanPath.contains('/')) {
+      // Reemplazar todos los separadores / por _
+      return cleanPath.replaceAll('/', '_');
+    }
+    
+    // Si ya está aplanado, devolverlo tal cual
+    return cleanPath;
+  }
+  
+  /// Convertir ruta de asset (puede tener estructura o estar aplanada) a ruta de archivo local aplanado
+  /// Funciona para TODOS los tipos de archivos multimedia: png, svg, ogg, mp3, jpg, jpeg, gif, webp, etc.
+  /// Los archivos se extraen con nombres aplanados porque Flutter no puede crear directorios anidados
   static Future<String?> assetPathToLocalPath(String? assetPath) async {
     if (assetPath == null || assetPath.isEmpty) {
-      print('[MediaPathHelper] ⚠️ assetPath es null o vacío');
       return null;
     }
     
-    print('[MediaPathHelper] 🔍 Convirtiendo path: $assetPath');
-    
-    // Si ya es una ruta absoluta (empieza con /), devolverla tal cual
+    // Si ya es una ruta absoluta (empieza con /), transformarla
     if (assetPath.startsWith('/')) {
-      print('[MediaPathHelper] ✅ Path ya es absoluto: $assetPath');
-      return assetPath;
+      // Extraer la parte relativa y aplanarla
+      final dataIndex = assetPath.indexOf('poke_searcher_data/');
+      if (dataIndex != -1) {
+        final relativePath = assetPath.substring(dataIndex + 'poke_searcher_data/'.length);
+        final flattenedName = _flattenPath(relativePath);
+        final dataDir = await getAppDataDirectory();
+        return path.join(dataDir.path, flattenedName);
+      }
+      // Si no tiene poke_searcher_data, intentar aplanar toda la ruta
+      final flattenedName = _flattenPath(assetPath);
+      final dataDir = await getAppDataDirectory();
+      return path.join(dataDir.path, flattenedName);
     }
     
-    // Remover prefijo "assets/" si existe
-    String relativePath = assetPath;
-    if (relativePath.startsWith('assets/')) {
-      relativePath = relativePath.substring(7); // Quitar "assets/"
-      print('[MediaPathHelper]   - Removido prefijo assets/: $relativePath');
-    }
-    
-    // Si la ruta no empieza con "media/", añadirla (por compatibilidad)
-    if (!relativePath.startsWith('media/')) {
-      relativePath = 'media/$relativePath';
-      print('[MediaPathHelper]   - Añadido prefijo media/: $relativePath');
-    }
-    
-    // Construir ruta local
+    // Transformar la ruta a nombre aplanado
+    final flattenedName = _flattenPath(assetPath);
     final dataDir = await getAppDataDirectory();
-    final localPath = path.join(dataDir.path, relativePath);
     
-    print('[MediaPathHelper]   - dataDir: ${dataDir.path}');
-    print('[MediaPathHelper]   - relativePath: $relativePath');
-    print('[MediaPathHelper]   - localPath final: $localPath');
+    // Construir ruta local aplanada directamente en la raíz de poke_searcher_data
+    final localPath = path.join(dataDir.path, flattenedName);
     
     // Verificar si el archivo existe
     final file = File(localPath);
     final exists = await file.exists();
-    print('[MediaPathHelper]   - Archivo existe: $exists');
     
     if (!exists) {
-      // Intentar buscar el archivo en ubicaciones alternativas
-      print('[MediaPathHelper] 🔍 Archivo no encontrado, buscando alternativas...');
-      final alternativePath = await _findAlternativePath(dataDir, relativePath);
-      if (alternativePath != null) {
-        print('[MediaPathHelper] ✅ Archivo encontrado en ubicación alternativa: $alternativePath');
-        return alternativePath;
-      }
-      
-      // Listar archivos en el directorio esperado para debugging
-      final expectedDir = Directory(path.dirname(localPath));
-      if (await expectedDir.exists()) {
-        print('[MediaPathHelper] 📂 Directorio existe, listando archivos:');
-        try {
-          await for (final entity in expectedDir.list()) {
-            if (entity is File) {
-              print('[MediaPathHelper]   - ${path.basename(entity.path)}');
+      // Buscar el archivo por nombre en poke_searcher_data (puede estar en cualquier ubicación)
+      try {
+        if (await dataDir.exists()) {
+          final fileName = path.basename(flattenedName);
+          
+          // PRIORIDAD 1: Buscar exactamente por nombre
+          await for (final entity in dataDir.list(recursive: true)) {
+            if (entity is File && path.basename(entity.path) == fileName) {
+              return entity.path;
             }
           }
-        } catch (e) {
-          print('[MediaPathHelper] ⚠️ Error listando directorio: $e');
+          
+          // PRIORIDAD 2: Para archivos de pokemon, buscar variante con _default_
+          // Ejemplo: media_pokemon_1_artwork_official.svg -> media_pokemon_1_default_artwork_official.svg
+          if (fileName.startsWith('media_pokemon_') && 
+              (fileName.contains('_artwork_official') || 
+               fileName.contains('_sprite_front_default') ||
+               fileName.contains('_sprite_front_shiny') ||
+               fileName.contains('_cry_latest') ||
+               fileName.contains('_cry_legacy'))) {
+            // Intentar insertar _default_ antes del tipo de archivo
+            String? alternativeName;
+            if (fileName.contains('_artwork_official')) {
+              alternativeName = fileName.replaceFirst('_artwork_official', '_default_artwork_official');
+            } else if (fileName.contains('_sprite_front_default')) {
+              alternativeName = fileName.replaceFirst('_sprite_front_default', '_default_sprite_front_default');
+            } else if (fileName.contains('_sprite_front_shiny')) {
+              alternativeName = fileName.replaceFirst('_sprite_front_shiny', '_default_sprite_front_shiny');
+            } else if (fileName.contains('_cry_latest')) {
+              alternativeName = fileName.replaceFirst('_cry_latest', '_default_cry_latest');
+            } else if (fileName.contains('_cry_legacy')) {
+              alternativeName = fileName.replaceFirst('_cry_legacy', '_default_cry_legacy');
+            }
+            
+            if (alternativeName != null) {
+              await for (final entity in dataDir.list(recursive: true)) {
+                if (entity is File && path.basename(entity.path) == alternativeName) {
+                  return entity.path;
+                }
+              }
+            }
+          }
         }
-      } else {
-        print('[MediaPathHelper] ❌ Directorio no existe: ${expectedDir.path}');
+      } catch (e) {
+        // Error buscando, continuar
       }
     }
     
     return localPath;
-  }
-  
-  /// Buscar archivo en ubicaciones alternativas
-  static Future<String?> _findAlternativePath(Directory dataDir, String relativePath) async {
-    final fileName = path.basename(relativePath);
-    final pathParts = path.split(relativePath);
-    
-    // Intentar construir nombre aplanado para buscar
-    // Ejemplo: media/pokemon/1000/sprite_front_shiny.png -> mediapokemon1000sprite_front_shiny.png
-    String? flattenedName;
-    if (pathParts.length >= 4) {
-      // Buscar patrón: media/{type}/{id}/{filename}
-      final typeIndex = pathParts.indexWhere((p) => p.toLowerCase() == 'media');
-      if (typeIndex >= 0 && typeIndex + 2 < pathParts.length) {
-        final mediaType = pathParts[typeIndex + 1];
-        final entityId = pathParts[typeIndex + 2];
-        final actualFileName = pathParts.last;
-        // Construir nombre aplanado: media + tipo + id + filename
-        flattenedName = 'media$mediaType$entityId$actualFileName';
-        print('[MediaPathHelper]   - Buscando nombre aplanado: $flattenedName');
-      }
-    }
-    
-    // Buscar recursivamente en media/
-    try {
-      final mediaDir = Directory(path.join(dataDir.path, 'media'));
-      if (await mediaDir.exists()) {
-        // Primero buscar por nombre exacto
-        await for (final entity in mediaDir.list(recursive: true)) {
-          if (entity is File && path.basename(entity.path) == fileName) {
-            print('[MediaPathHelper]   - Encontrado archivo alternativo: ${entity.path}');
-            return entity.path;
-          }
-        }
-        
-        // Si no se encuentra, buscar por nombre aplanado
-        if (flattenedName != null) {
-          await for (final entity in mediaDir.list()) {
-            if (entity is File && path.basename(entity.path) == flattenedName) {
-              print('[MediaPathHelper]   - Encontrado archivo aplanado: ${entity.path}');
-              // Reorganizar el archivo aplanado a la estructura correcta
-              final targetPath = await _reorganizeFlattenedFile(entity, relativePath, dataDir);
-              if (targetPath != null) {
-                return targetPath;
-              }
-              // Si la reorganización falla, devolver el path aplanado
-              return entity.path;
-            }
-          }
-        }
-      }
-    } catch (e) {
-      print('[MediaPathHelper] ⚠️ Error buscando archivo alternativo: $e');
-    }
-    
-    return null;
-  }
-  
-  /// Reorganizar un archivo aplanado a la estructura correcta
-  static Future<String?> _reorganizeFlattenedFile(File flattenedFile, String targetRelativePath, Directory dataDir) async {
-    try {
-      final targetPath = path.join(dataDir.path, targetRelativePath);
-      final targetDir = Directory(path.dirname(targetPath));
-      
-      if (!await targetDir.exists()) {
-        await targetDir.create(recursive: true);
-      }
-      
-      final targetFile = File(targetPath);
-      if (!await targetFile.exists()) {
-        await flattenedFile.rename(targetPath);
-        print('[MediaPathHelper]   ✅ Archivo reorganizado: ${path.basename(flattenedFile.path)} -> $targetRelativePath');
-        return targetPath;
-      } else {
-        // Si ya existe, eliminar el duplicado aplanado
-        await flattenedFile.delete();
-        return targetPath;
-      }
-    } catch (e) {
-      print('[MediaPathHelper] ⚠️ Error reorganizando archivo: $e');
-      return null;
-    }
   }
   
   /// Verificar si un archivo local existe

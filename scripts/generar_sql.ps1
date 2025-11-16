@@ -1770,9 +1770,37 @@ function Generate-PokemonMovesCsv($dataDir) {
     return $rows
 }
 
+# Función auxiliar para obtener el pokemonId del pokemon default de una especie
+function Get-DefaultPokemonIdFromSpecies($speciesApiId, $dataDir) {
+    $speciesPath = Join-Path $dataDir "pokemon-species\$speciesApiId\data.json"
+    if (-not (Test-Path $speciesPath)) {
+        return $null
+    }
+    
+    try {
+        $speciesData = Get-Content $speciesPath -Raw | ConvertFrom-Json
+        if ($speciesData.varieties) {
+            foreach ($variety in $speciesData.varieties) {
+                if ($variety.is_default) {
+                    $pokemonInfo = $variety.pokemon
+                    if ($pokemonInfo) {
+                        $pokemonApiId = Get-ApiIdFromUrl $pokemonInfo.url
+                        $pokemonDbId = Get-DbId "pokemon" $pokemonApiId
+                        return $pokemonDbId
+                    }
+                }
+            }
+        }
+    } catch {
+        Write-Warning "  [AVISO] Error obteniendo pokemon default para especie $speciesApiId: $_"
+    }
+    
+    return $null
+}
+
 function Generate-PokedexEntriesCsv($dataDir) {
     $rows = @()
-    $header = "pokedex_id;pokemon_species_id;entry_number"
+    $header = "pokedex_id;pokemon_id;entry_number"
     $rows += $header
     
     $pokedexPath = Join-Path $dataDir "pokedex"
@@ -1797,10 +1825,15 @@ function Generate-PokedexEntriesCsv($dataDir) {
                 
                 if ($speciesInfo -and $entryNumber) {
                     $speciesApiId = Get-ApiIdFromUrl $speciesInfo.url
-                    $speciesDbId = Get-DbId "pokemonSpecies" $speciesApiId
+                    # Obtener el pokemonId del pokemon default de esta especie
+                    $pokemonDbId = Get-DefaultPokemonIdFromSpecies $speciesApiId $dataDir
                     
-                    $row = "$pokedexDbId;$speciesDbId;$entryNumber"
-                    $rows += $row
+                    if ($null -ne $pokemonDbId) {
+                        $row = "$pokedexDbId;$pokemonDbId;$entryNumber"
+                        $rows += $row
+                    } else {
+                        Write-Warning "  [AVISO] No se encontró pokemon default para especie $speciesApiId, saltando entrada..."
+                    }
                 }
             }
         }
@@ -1818,10 +1851,15 @@ function Generate-PokedexEntriesCsv($dataDir) {
                 
                 if ($speciesInfo -and $entryNumber) {
                     $speciesApiId = Get-ApiIdFromUrl $speciesInfo.url
-                    $speciesDbId = Get-DbId "pokemonSpecies" $speciesApiId
+                    # Obtener el pokemonId del pokemon default de esta especie
+                    $pokemonDbId = Get-DefaultPokemonIdFromSpecies $speciesApiId $dataDir
                     
-                    $row = "$nationalPokedexDbId;$speciesDbId;$entryNumber"
-                    $rows += $row
+                    if ($null -ne $pokemonDbId) {
+                        $row = "$nationalPokedexDbId;$pokemonDbId;$entryNumber"
+                        $rows += $row
+                    } else {
+                        Write-Warning "  [AVISO] No se encontró pokemon default para especie $speciesApiId (nacional), saltando entrada..."
+                    }
                 }
             }
         }

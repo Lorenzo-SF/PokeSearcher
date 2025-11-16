@@ -47,6 +47,9 @@ dependencies:
   # Archive (para extraer ZIP)
   archive: ^3.4.0
   
+  # Crypto (para verificación SHA256)
+  crypto: ^3.0.3
+  
   # Storage
   shared_preferences: ^2.2.2
   

@@ -4,6 +4,7 @@ import '../database/app_database.dart';
 import '../services/config/app_config.dart';
 import '../database/daos/type_dao.dart';
 import '../utils/color_generator.dart';
+import '../utils/type_image_helper.dart';
 import 'type_detail_screen.dart';
 
 class TypesListScreen extends StatefulWidget {
@@ -118,18 +119,27 @@ class _TypesListScreenState extends State<TypesListScreen> {
                           ],
                         ),
                       )
-                    : GridView.builder(
-                        padding: const EdgeInsets.all(16),
-                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 4,
-                          crossAxisSpacing: 16,
-                          mainAxisSpacing: 16,
-                          childAspectRatio: 1.0, // Círculos: ancho = alto
-                        ),
-                        itemCount: _types.length,
-                        itemBuilder: (context, index) {
-                          final type = _types[index];
-                          return _buildTypeCapsule(type);
+                    : LayoutBuilder(
+                        builder: (context, constraints) {
+                          // Calcular número de columnas según el ancho disponible
+                          // Cada imagen tiene 200px de ancho + 16px de padding lateral
+                          final itemWidth = 200.0 + 32.0; // ancho + padding
+                          final crossAxisCount = (constraints.maxWidth / itemWidth).floor().clamp(1, 10);
+                          
+                          return GridView.builder(
+                            padding: const EdgeInsets.all(16),
+                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: crossAxisCount,
+                              crossAxisSpacing: 16,
+                              mainAxisSpacing: 16,
+                              childAspectRatio: 200 / 40, // Ancho: 200, Alto: 40
+                            ),
+                            itemCount: _types.length,
+                            itemBuilder: (context, index) {
+                              final type = _types[index];
+                              return _buildTypeImage(type);
+                            },
+                          );
                         },
                       ),
           ),
@@ -162,58 +172,86 @@ class _TypesListScreenState extends State<TypesListScreen> {
     );
   }
 
-  Widget _buildTypeCapsule(Type type) {
-    final colorHex = type.color;
-    final color = colorHex != null 
-        ? Color(ColorGenerator.hexToColor(colorHex))
-        : Colors.grey;
-    
-    // Obtener nombre traducido usando el servicio de traducción
-    // Por ahora usamos el nombre directo, pero se puede mejorar con TranslationService
-    final typeName = type.name; // TODO: usar TranslationService con widget.appConfig.language
-    
-    return GestureDetector(
-      onTap: () {
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (context) => TypeDetailScreen(
-              database: widget.database,
-              appConfig: widget.appConfig,
-              typeId: type.id,
+  Widget _buildTypeImage(Type type) {
+    return FutureBuilder<String?>(
+      future: TypeImageHelper.getTypeImagePathFromConfig(
+        typeApiId: type.apiId,
+        typeName: type.name,
+        appConfig: widget.appConfig,
+        database: widget.database,
+      ),
+      builder: (context, snapshot) {
+        final imagePath = snapshot.data ?? 'assets/types/${type.name.toLowerCase()}.png';
+        
+        return GestureDetector(
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => TypeDetailScreen(
+                  database: widget.database,
+                  appConfig: widget.appConfig,
+                  typeId: type.id,
+                ),
+              ),
+            );
+          },
+          child: Container(
+            width: 200,
+            height: 40,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 4,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.asset(
+                imagePath,
+                width: 200,
+                height: 40,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) {
+                  // Fallback: mostrar color de fondo con nombre
+                  final colorHex = type.color;
+                  final color = colorHex != null 
+                      ? Color(ColorGenerator.hexToColor(colorHex))
+                      : Colors.grey;
+                  
+                  return Container(
+                    width: 200,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: color,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Center(
+                      child: Text(
+                        type.name,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                          shadows: [
+                            Shadow(
+                              color: Colors.black,
+                              blurRadius: 2,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
           ),
         );
       },
-      child: Container(
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle, // Círculo en lugar de cápsula
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.3),
-              blurRadius: 8,
-              spreadRadius: 2,
-            ),
-          ],
-        ),
-        child: Center(
-          child: Text(
-            typeName,
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 14,
-              shadows: [
-                Shadow(
-                  color: Colors.black,
-                  blurRadius: 3,
-                ),
-              ],
-            ),
-            textAlign: TextAlign.center,
-          ),
-        ),
-      ),
     );
   }
 }

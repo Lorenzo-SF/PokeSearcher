@@ -4,6 +4,7 @@ import '../database/app_database.dart';
 import '../services/config/app_config.dart';
 import '../database/daos/pokedex_dao.dart';
 import '../database/daos/pokemon_dao.dart';
+import '../database/daos/type_dao.dart';
 import '../utils/color_generator.dart';
 import '../utils/pokemon_image_helper.dart';
 import '../widgets/type_stripe_background.dart';
@@ -15,6 +16,7 @@ class PokemonListScreen extends StatefulWidget {
   final AppConfig appConfig;
   final int? regionId; // nullable para pokedex nacional
   final String regionName;
+  final int? typeId; // nullable, si está presente filtra por tipo
 
   const PokemonListScreen({
     super.key,
@@ -22,6 +24,7 @@ class PokemonListScreen extends StatefulWidget {
     required this.appConfig,
     this.regionId, // nullable para pokedex nacional
     required this.regionName,
+    this.typeId, // nullable, si está presente filtra por tipo
   });
 
   @override
@@ -30,12 +33,87 @@ class PokemonListScreen extends StatefulWidget {
 
 class _PokemonListScreenState extends State<PokemonListScreen> {
   List<Map<String, dynamic>> _pokemonList = [];
+  List<Map<String, dynamic>> _filteredPokemonList = [];
   bool _isLoading = true;
+  
+  // Filtros
+  final TextEditingController _nameFilterController = TextEditingController();
+  int? _selectedType1Id;
+  int? _selectedType2Id;
+  List<Type> _availableTypes = [];
+  bool _isLoadingTypes = true;
 
   @override
   void initState() {
     super.initState();
+    _loadTypes();
     _loadPokemons();
+    _nameFilterController.addListener(_applyFilters);
+  }
+  
+  @override
+  void dispose() {
+    _nameFilterController.dispose();
+    super.dispose();
+  }
+  
+  Future<void> _loadTypes() async {
+    try {
+      final typeDao = TypeDao(widget.database);
+      final types = await typeDao.getAllTypes();
+      // Filtrar tipos desconocidos, stellar y shadow
+      final filteredTypes = types.where((t) => 
+        t.name.toLowerCase() != 'unknown' &&
+        t.name.toLowerCase() != 'stellar' &&
+        t.name.toLowerCase() != 'shadow'
+      ).toList();
+      setState(() {
+        _availableTypes = filteredTypes;
+        _isLoadingTypes = false;
+      });
+    } catch (e) {
+      setState(() => _isLoadingTypes = false);
+    }
+  }
+  
+  void _applyFilters() {
+    setState(() {
+      _filteredPokemonList = _pokemonList.where((item) {
+        // Filtro por nombre
+        final species = item['species'] as PokemonSpecy;
+        final nameFilter = _nameFilterController.text.toLowerCase().trim();
+        if (nameFilter.isNotEmpty) {
+          if (!species.name.toLowerCase().contains(nameFilter)) {
+            return false;
+          }
+        }
+        
+        // Filtro por tipos
+        final types = item['types'] as List<Type>;
+        if (_selectedType1Id != null || _selectedType2Id != null) {
+          final typeIds = types.map((t) => t.id).toList();
+          
+          if (_selectedType1Id != null && _selectedType2Id != null) {
+            // Ambos tipos deben estar presentes (en cualquier orden)
+            if (!typeIds.contains(_selectedType1Id!) || !typeIds.contains(_selectedType2Id!)) {
+              return false;
+            }
+          } else if (_selectedType1Id != null) {
+            // Solo tipo 1
+            if (!typeIds.contains(_selectedType1Id!)) {
+              return false;
+            }
+          } else if (_selectedType2Id != null) {
+            // Solo tipo 2
+            if (!typeIds.contains(_selectedType2Id!)) {
+              return false;
+            }
+          }
+        }
+        
+        return true;
+      }).toList();
+    });
   }
 
   Future<void> _loadPokemons() async {
@@ -43,6 +121,38 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
       final pokedexDao = PokedexDao(widget.database);
       final pokemonDao = PokemonDao(widget.database);
       
+      // Si hay filtro por tipo, usar lógica especial
+      if (widget.typeId != null) {
+        final pokemonByType = await pokemonDao.getPokemonByTypeOrderedByNational(widget.typeId!);
+        
+        final List<Map<String, dynamic>> pokemonList = [];
+        
+        for (final entry in pokemonByType) {
+          final pokemon = entry['pokemon'] as PokemonData;
+          final species = entry['species'] as PokemonSpecy;
+          final nationalEntryNumber = entry['nationalEntryNumber'] as int;
+          
+          // Obtener tipos del pokemon
+          final types = await pokemonDao.getPokemonTypes(pokemon.id);
+          
+          pokemonList.add({
+            'species': species,
+            'pokemon': pokemon,
+            'orderNumber': nationalEntryNumber,
+            'usedPokedex': null, // No aplica para filtro por tipo
+            'types': types,
+          });
+        }
+        
+        setState(() {
+          _pokemonList = pokemonList;
+          _isLoading = false;
+        });
+        _applyFilters();
+        return;
+      }
+      
+      // Lógica normal por región
       List<PokedexData> pokedexList;
       Map<int, Map<String, dynamic>> uniquePokemon;
       
@@ -61,8 +171,10 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
         final entries = await pokedexDao.getPokedexEntries(nationalPokedex.id);
         uniquePokemon = {};
         for (final entry in entries) {
+          final pokemon = await pokemonDao.getPokemonById(entry.pokemonId);
+          if (pokemon == null) continue;
           final species = await (widget.database.select(widget.database.pokemonSpecies)
-            ..where((t) => t.id.equals(entry.pokemonSpeciesId)))
+            ..where((t) => t.id.equals(pokemon.speciesId)))
             .getSingleOrNull();
           if (species != null && !uniquePokemon.containsKey(species.id)) {
             uniquePokemon[species.id] = {
@@ -152,10 +264,6 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
     }
   }
 
-  /// Obtener la mejor imagen disponible desde assets (SVG preferido)
-  String? _getBestImagePath(PokemonData? pokemon) {
-    return PokemonImageHelper.getBestImagePath(pokemon);
-  }
 
 
   /// Obtener colores de los tipos del pokemon
@@ -214,9 +322,15 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
             padding: EdgeInsets.only(
               top: MediaQuery.of(context).padding.top + 56,
             ),
-            child: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _pokemonList.isEmpty
+            child: Column(
+              children: [
+                // Filtros
+                _buildFilters(),
+                // Lista de pokemons
+                Expanded(
+                  child: _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _filteredPokemonList.isEmpty
               ? Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -234,17 +348,17 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                     ],
                   ),
                 )
-              : GridView.builder(
-                  padding: const EdgeInsets.all(8),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 8,
-                    mainAxisSpacing: 8,
-                    childAspectRatio: 0.75, // Ancho/Altura
-                  ),
-                  itemCount: _pokemonList.length,
-                  itemBuilder: (context, index) {
-                    final item = _pokemonList[index];
+                    : GridView.builder(
+                        padding: const EdgeInsets.all(8),
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 3,
+                          crossAxisSpacing: 8,
+                          mainAxisSpacing: 8,
+                          childAspectRatio: 0.75, // Ancho/Altura
+                        ),
+                        itemCount: _filteredPokemonList.length,
+                        itemBuilder: (context, index) {
+                          final item = _filteredPokemonList[index];
                     final species = item['species'] as PokemonSpecy;
                     final pokemon = item['pokemon'] as PokemonData?;
                     final orderNumber = item['orderNumber'] as int;
@@ -275,10 +389,13 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                         usedPokedex: usedPokedex,
                         colors: colors,
                         types: types,
-                      ),
-                    );
-                  },
+                        ),
+                      );
+                    },
+                  ),
                 ),
+              ],
+            ),
           ),
           // Botón de volver
           Positioned(
@@ -309,6 +426,100 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
     );
   }
 
+  Widget _buildFilters() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      color: Colors.black.withOpacity(0.3),
+      child: Column(
+        children: [
+          // Filtro por nombre
+          TextField(
+            controller: _nameFilterController,
+            decoration: InputDecoration(
+              labelText: 'Buscar por nombre',
+              hintText: 'Escribe el nombre del Pokémon...',
+              prefixIcon: const Icon(Icons.search),
+              filled: true,
+              fillColor: Colors.white,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          // Filtros por tipo
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<int>(
+                  value: _selectedType1Id,
+                  decoration: InputDecoration(
+                    labelText: 'Tipo 1',
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  items: [
+                    const DropdownMenuItem<int>(
+                      value: null,
+                      child: Text('Ninguno'),
+                    ),
+                    ..._availableTypes.map((type) {
+                      return DropdownMenuItem<int>(
+                        value: type.id,
+                        child: Text(type.name),
+                      );
+                    }),
+                  ],
+                  onChanged: _isLoadingTypes ? null : (value) {
+                    setState(() {
+                      _selectedType1Id = value;
+                    });
+                    _applyFilters();
+                  },
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: DropdownButtonFormField<int>(
+                  value: _selectedType2Id,
+                  decoration: InputDecoration(
+                    labelText: 'Tipo 2',
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  items: [
+                    const DropdownMenuItem<int>(
+                      value: null,
+                      child: Text('Ninguno'),
+                    ),
+                    ..._availableTypes.map((type) {
+                      return DropdownMenuItem<int>(
+                        value: type.id,
+                        child: Text(type.name),
+                      );
+                    }),
+                  ],
+                  onChanged: _isLoadingTypes ? null : (value) {
+                    setState(() {
+                      _selectedType2Id = value;
+                    });
+                    _applyFilters();
+                  },
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildPokemonCard({
     required PokemonSpecy species,
     required PokemonData? pokemon,
@@ -317,8 +528,13 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
     required List<Color> colors,
     required List<Type> types,
   }) {
-    final imagePath = _getBestImagePath(pokemon);
-    final pokedexName = usedPokedex?.name ?? '';
+    // Usar front_transparent si hay configuración, sino usar lógica por defecto
+    final imagePathFuture = PokemonImageHelper.getBestImagePath(
+      pokemon,
+      appConfig: widget.appConfig,
+      database: widget.database,
+      imageType: 'front_transparent',
+    );
     
     return Container(
       decoration: BoxDecoration(
@@ -341,25 +557,6 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  // Número de orden y nombre de pokedex en la parte superior
-                  Text(
-                    '$orderNumber${pokedexName.isNotEmpty ? ' ($pokedexName)' : ''}',
-                    style: const TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                      shadows: [
-                        Shadow(
-                          color: Colors.black,
-                          blurRadius: 2,
-                        ),
-                      ],
-                    ),
-                    textAlign: TextAlign.center,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 4),
                   // Imagen del pokemon (SVG preferido) desde assets
                   Expanded(
                     child: Container(
@@ -374,14 +571,19 @@ class _PokemonListScreenState extends State<PokemonListScreen> {
                       ),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(7),
-                        child: PokemonImage(
-                          imagePath: imagePath,
-                          fit: BoxFit.contain,
-                          errorWidget: const Icon(
-                            Icons.catching_pokemon,
-                            size: 32,
-                            color: Colors.white,
-                          ),
+                        child: FutureBuilder<String?>(
+                          future: imagePathFuture,
+                          builder: (context, snapshot) {
+                            return PokemonImage(
+                              imagePath: snapshot.data,
+                              fit: BoxFit.contain,
+                              errorWidget: const Icon(
+                                Icons.catching_pokemon,
+                                size: 32,
+                                color: Colors.white,
+                              ),
+                            );
+                          },
                         ),
                       ),
                     ),

@@ -1,15 +1,17 @@
+import 'dart:convert';
 import 'package:drift/drift.dart';
 import '../app_database.dart';
 import '../tables/pokedex.dart';
 import '../tables/pokedex_entries.dart';
 import '../tables/pokemon_species.dart';
+import '../tables/pokemon.dart';
 import '../tables/regions.dart';
 import '../../utils/starter_pokemon.dart';
 
 part 'pokedex_dao.g.dart';
 
 /// Data Access Object para operaciones con Pokedex
-@DriftAccessor(tables: [Pokedex, PokedexEntries, PokemonSpecies, Regions])
+@DriftAccessor(tables: [Pokedex, PokedexEntries, PokemonSpecies, Pokemon, Regions])
 class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
   PokedexDao(super.db);
   
@@ -44,6 +46,7 @@ class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
   }
   
   /// Obtener especies de Pokémon en un pokedex
+  /// Ahora usa pokemonId en lugar de pokemonSpeciesId
   Future<List<PokemonSpecy>> getSpeciesInPokedex(int pokedexId) async {
     final query = select(pokedexEntries)
       ..where((t) => t.pokedexId.equals(pokedexId));
@@ -54,16 +57,22 @@ class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
       return [];
     }
     
-    final speciesIds = entries.map((e) => e.pokemonSpeciesId).toList();
+    // Obtener pokemons y luego sus especies
+    final pokemonIds = entries.map((e) => e.pokemonId).toList();
+    final pokemons = await (select(pokemon)
+      ..where((t) => t.id.isIn(pokemonIds)))
+      .get();
+    
+    final speciesIds = pokemons.map((p) => p.speciesId).toSet().toList();
     return await (select(pokemonSpecies)
       ..where((t) => t.id.isIn(speciesIds)))
       .get();
   }
   
-  /// Obtener los 3 Pokémon iniciales de una región usando la lista fija
+  /// Obtener los Pokémon iniciales de una región desde processed_starters_json
   /// Si la región no tiene iniciales definidos o no se encuentran en la DB, retorna lista vacía
   Future<List<PokemonSpecy>> getStarterPokemon(int regionId) async {
-    // Obtener el nombre de la región
+    // Obtener la región
     final region = await (select(regions)
       ..where((t) => t.id.equals(regionId)))
       .getSingleOrNull();
@@ -72,8 +81,25 @@ class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
       return [];
     }
     
-    // Obtener los nombres de los iniciales para esta región
-    final starterNames = StarterPokemon.getStartersForRegion(region.name);
+    // Obtener los nombres de los iniciales desde processed_starters_json
+    List<String> starterNames = [];
+    if (region.processedStartersJson != null && region.processedStartersJson!.isNotEmpty) {
+      try {
+        final startersData = jsonDecode(region.processedStartersJson!) as List;
+        starterNames = startersData
+            .map((item) => item.toString())
+            .where((name) => name.isNotEmpty)
+            .toList();
+      } catch (e) {
+        print('[PokedexDao] ⚠️ Error parseando processed_starters_json para región ${region.name}: $e');
+        // Fallback a la lista fija si hay error parseando
+        starterNames = StarterPokemon.getStartersForRegion(region.name);
+      }
+    } else {
+      // Fallback a la lista fija si no hay processed_starters_json
+      starterNames = StarterPokemon.getStartersForRegion(region.name);
+    }
+    
     if (starterNames.isEmpty) {
       return [];
     }
@@ -95,6 +121,8 @@ class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
   
   /// Obtener todos los pokemons únicos de una región con sus números de pokedex
   /// Retorna un mapa: speciesId -> {species, pokedexNumbers: [{pokedexId, entryNumber, color}]}
+  /// Ahora usa pokemonId en lugar de pokemonSpeciesId
+  /// OPTIMIZADO: Evita N+1 queries cargando todos los pokemons y especies de una vez
   Future<Map<int, Map<String, dynamic>>> getUniquePokemonByRegion(int regionId) async {
     // Obtener todas las pokedexes de la región
     final pokedexList = await getPokedexByRegion(regionId);
@@ -102,40 +130,67 @@ class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
       return {};
     }
     
-    final Map<int, Map<String, dynamic>> result = {};
-    
-    // Para cada pokedex, obtener sus entradas
+    // OPTIMIZACIÓN: Cargar todas las entradas de todas las pokedexes de una vez
+    final List<PokedexEntry> allEntries = [];
     for (final pokedex in pokedexList) {
       final entries = await getPokedexEntries(pokedex.id);
+      allEntries.addAll(entries);
+    }
+    
+    if (allEntries.isEmpty) {
+      return {};
+    }
+    
+    // OPTIMIZACIÓN: Cargar todos los pokemons de una vez
+    final pokemonIds = allEntries.map((e) => e.pokemonId).toSet().toList();
+    final allPokemons = await (select(pokemon)
+      ..where((t) => t.id.isIn(pokemonIds)))
+      .get();
+    
+    // Crear mapa de pokemonId -> pokemon
+    final pokemonMap = {for (var p in allPokemons) p.id: p};
+    
+    // OPTIMIZACIÓN: Cargar todas las especies de una vez
+    final speciesIds = allPokemons.map((p) => p.speciesId).toSet().toList();
+    final allSpecies = await (select(pokemonSpecies)
+      ..where((t) => t.id.isIn(speciesIds)))
+      .get();
+    
+    // Crear mapa de speciesId -> species
+    final speciesMap = {for (var s in allSpecies) s.id: s};
+    
+    // Construir resultado
+    final Map<int, Map<String, dynamic>> result = {};
+    
+    for (final entry in allEntries) {
+      final pokemonData = pokemonMap[entry.pokemonId];
+      if (pokemonData == null) continue;
       
-      for (final entry in entries) {
-        final speciesId = entry.pokemonSpeciesId;
-        
-        // Si no existe, crear entrada
-        if (!result.containsKey(speciesId)) {
-          // Obtener la especie
-          final species = await (select(pokemonSpecies)
-            ..where((t) => t.id.equals(speciesId)))
-            .getSingleOrNull();
-          
-          if (species != null) {
-            result[speciesId] = {
-              'species': species,
-              'pokedexNumbers': [],
-            };
-          }
-        }
-        
-        // Añadir número de pokedex
-        if (result.containsKey(speciesId)) {
-          result[speciesId]!['pokedexNumbers'].add({
-            'pokedexId': pokedex.id,
-            'pokedexApiId': pokedex.apiId,
-            'entryNumber': entry.entryNumber,
-            'color': pokedex.color,
-          });
-        }
+      final speciesId = pokemonData.speciesId;
+      final species = speciesMap[speciesId];
+      if (species == null) continue;
+      
+      // Obtener la pokedex correspondiente
+      final pokedex = pokedexList.firstWhere(
+        (p) => p.id == entry.pokedexId,
+        orElse: () => pokedexList.first,
+      );
+      
+      // Si no existe, crear entrada
+      if (!result.containsKey(speciesId)) {
+        result[speciesId] = {
+          'species': species,
+          'pokedexNumbers': [],
+        };
       }
+      
+      // Añadir número de pokedex
+      result[speciesId]!['pokedexNumbers'].add({
+        'pokedexId': pokedex.id,
+        'pokedexApiId': pokedex.apiId,
+        'entryNumber': entry.entryNumber,
+        'color': pokedex.color,
+      });
     }
     
     // Ordenar números de pokedex por pokedexId
@@ -181,9 +236,17 @@ class PokedexDao extends DatabaseAccessor<AppDatabase> with _$PokedexDaoMixin {
   }
   
   /// Obtener el número de entrada de un pokemon en una pokedex específica
+  /// Ahora busca por pokemonId (necesita obtener el pokemon default de la especie)
   Future<int?> getEntryNumberForPokemon(int pokedexId, int speciesId) async {
+    // Obtener el pokemon default de la especie
+    final defaultPokemon = await (select(pokemon)
+      ..where((t) => t.speciesId.equals(speciesId) & t.isDefault.equals(true)))
+      .getSingleOrNull();
+    
+    if (defaultPokemon == null) return null;
+    
     final entry = await (select(pokedexEntries)
-      ..where((t) => t.pokedexId.equals(pokedexId) & t.pokemonSpeciesId.equals(speciesId)))
+      ..where((t) => t.pokedexId.equals(pokedexId) & t.pokemonId.equals(defaultPokemon.id)))
       .getSingleOrNull();
     return entry?.entryNumber;
   }

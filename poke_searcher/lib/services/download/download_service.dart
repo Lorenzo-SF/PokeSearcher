@@ -414,17 +414,25 @@ class DownloadService {
         // Verificar que la pokedex tenga entradas
         final entries = await pokedexDao.getPokedexEntries(pokedex.id);
         if (entries.isEmpty) {
+          Logger.pokedex('Pokedex incompleta (sin entradas)', pokedexName: 'ID: $pokedexApiId');
           incompleteUrls.add(pokedexUrl); // La pokedex no tiene entradas
           continue;
         }
+        
+        Logger.pokedex('Pokedex tiene ${entries.length} entradas', pokedexName: 'ID: $pokedexApiId');
         
         // Verificar que cada entrada tenga su pokemon-species y al menos un pokemon
         // Verificación simplificada: solo comprobar que existan
         bool isIncomplete = false;
         for (final entry in entries) {
-          // Verificar que existe el pokemon-species
+          // Verificar que existe el pokemon
+          final pokemon = await pokemonDao.getPokemonById(entry.pokemonId);
+          if (pokemon == null) {
+            isIncomplete = true;
+            break;
+          }
           final species = await (database.select(database.pokemonSpecies)
-            ..where((t) => t.id.equals(entry.pokemonSpeciesId)))
+            ..where((t) => t.id.equals(pokemon.speciesId)))
             .getSingleOrNull();
           
           if (species == null) {
@@ -834,9 +842,18 @@ class DownloadService {
           if (pokedex != null && pokedex.name != 'national') {
             try {
               await database.transaction(() async {
+                // Obtener el pokemon default de esta especie
+                final pokemonDao = PokemonDao(database);
+                final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
+                if (pokemons.isEmpty) return;
+                final defaultPokemon = pokemons.firstWhere(
+                  (p) => p.isDefault,
+                  orElse: () => pokemons.first,
+                );
+                
                 final entryCompanion = PokedexEntriesCompanion.insert(
                   pokedexId: pokedex.id,
-                  pokemonSpeciesId: species.id,
+                  pokemonId: defaultPokemon.id,
                   entryNumber: entryNumber,
                 );
                 await database.into(database.pokedexEntries).insert(
@@ -875,9 +892,17 @@ class DownloadService {
                 if (regionPokedex.apiId == pokedexApiId && regionPokedex.name != 'national') {
                   try {
                     await database.transaction(() async {
+                      final pokemonDao = PokemonDao(database);
+                      final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
+                      if (pokemons.isEmpty) return;
+                      final defaultPokemon = pokemons.firstWhere(
+                        (p) => p.isDefault,
+                        orElse: () => pokemons.first,
+                      );
+                      
                       final entryCompanion = PokedexEntriesCompanion.insert(
                         pokedexId: regionPokedex.id,
-                        pokemonSpeciesId: species.id,
+                        pokemonId: defaultPokemon.id,
                         entryNumber: entryNumber,
                       );
                       await database.into(database.pokedexEntries).insert(
@@ -926,9 +951,18 @@ class DownloadService {
           if (nationalPokedex != null) {
             try {
               await database.transaction(() async {
+                // Obtener el pokemon default de esta especie
+                final pokemonDao = PokemonDao(database);
+                final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
+                if (pokemons.isEmpty) return;
+                final defaultPokemon = pokemons.firstWhere(
+                  (p) => p.isDefault,
+                  orElse: () => pokemons.first,
+                );
+                
                 final entryCompanion = PokedexEntriesCompanion.insert(
                   pokedexId: nationalPokedex.id,
-                  pokemonSpeciesId: species.id,
+                  pokemonId: defaultPokemon.id,
                   entryNumber: nationalEntryNumber,
                 );
                 await database.into(database.pokedexEntries).insert(
@@ -1279,9 +1313,18 @@ class DownloadService {
           if (pokedex != null && pokedex.name != 'national') {
             try {
               await database.transaction(() async {
+                // Obtener el pokemon default de esta especie
+                final pokemonDao = PokemonDao(database);
+                final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
+                if (pokemons.isEmpty) return;
+                final defaultPokemon = pokemons.firstWhere(
+                  (p) => p.isDefault,
+                  orElse: () => pokemons.first,
+                );
+                
                 final entryCompanion = PokedexEntriesCompanion.insert(
                   pokedexId: pokedex.id,
-                  pokemonSpeciesId: species.id,
+                  pokemonId: defaultPokemon.id,
                   entryNumber: entryNumber,
                 );
                 await database.into(database.pokedexEntries).insert(
@@ -1317,9 +1360,18 @@ class DownloadService {
                 if (regionPokedex.apiId == pokedexApiId && regionPokedex.name != 'national') {
                   try {
                     await database.transaction(() async {
+                      // Obtener el pokemon default de esta especie
+                      final pokemonDao = PokemonDao(database);
+                      final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
+                      if (pokemons.isEmpty) return;
+                      final defaultPokemon = pokemons.firstWhere(
+                        (p) => p.isDefault,
+                        orElse: () => pokemons.first,
+                      );
+                      
                       final entryCompanion = PokedexEntriesCompanion.insert(
                         pokedexId: regionPokedex.id,
-                        pokemonSpeciesId: species.id,
+                        pokemonId: defaultPokemon.id,
                         entryNumber: entryNumber,
                       );
                       await database.into(database.pokedexEntries).insert(
@@ -1367,9 +1419,18 @@ class DownloadService {
           if (nationalPokedex != null) {
             try {
               await database.transaction(() async {
+                // Obtener el pokemon default de esta especie
+                final pokemonDao = PokemonDao(database);
+                final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
+                if (pokemons.isEmpty) return;
+                final defaultPokemon = pokemons.firstWhere(
+                  (p) => p.isDefault,
+                  orElse: () => pokemons.first,
+                );
+                
                 final entryCompanion = PokedexEntriesCompanion.insert(
                   pokedexId: nationalPokedex.id,
-                  pokemonSpeciesId: species.id,
+                  pokemonId: defaultPokemon.id,
                   entryNumber: nationalEntryNumber,
                 );
                 await database.into(database.pokedexEntries).insert(
@@ -1489,9 +1550,18 @@ class DownloadService {
           
           if (species != null) {
             await database.transaction(() async {
+              // Obtener el pokemon default de esta especie
+              final pokemonDao = PokemonDao(database);
+                      final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
+                      if (pokemons.isEmpty) return;
+              final defaultPokemon = pokemons.firstWhere(
+                (p) => p.isDefault,
+                orElse: () => pokemons.first,
+              );
+              
               final entryCompanion = PokedexEntriesCompanion(
                 pokedexId: Value(pokedex.id),
-                pokemonSpeciesId: Value(species.id),
+                pokemonId: Value(defaultPokemon.id),
                 entryNumber: Value(entryNumber),
               );
               
@@ -1918,15 +1988,7 @@ class DownloadService {
       weight: Value(_safeIntFromDynamic(data['weight'])),
       isDefault: Value(data['is_default'] as bool? ?? false),
       order: Value(_safeIntFromDynamic(data['order'])),
-      // URLs de multimedia
-      spriteFrontDefaultUrl: Value(spriteFrontDefaultUrl),
-      spriteFrontShinyUrl: Value(spriteFrontShinyUrl),
-      spriteBackDefaultUrl: Value(spriteBackDefaultUrl),
-      spriteBackShinyUrl: Value(spriteBackShinyUrl),
-      artworkOfficialUrl: Value(artworkOfficialUrl),
-      artworkOfficialShinyUrl: Value(artworkOfficialShinyUrl),
-      cryLatestUrl: Value(cryLatestUrl),
-      cryLegacyUrl: Value(cryLegacyUrl),
+      // URLs de multimedia - estos campos no existen en la tabla Pokemon, se guardan en JSON
       // JSON
       spritesJson: Value(_jsonEncode(sprites)),
       criesJson: Value(_jsonEncode(cries)),
@@ -2007,133 +2069,9 @@ class DownloadService {
     
     if (pokemon == null) return;
     
-    // Descargar cada tipo de multimedia si existe la URL
-    final updates = <String, String?>{};
-    
-    // Sprites
-    if (pokemon.spriteFrontDefaultUrl != null) {
-      try {
-        final extension = pokemon.spriteFrontDefaultUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
-        final path = await _downloadMediaFile(
-          pokemon.spriteFrontDefaultUrl!,
-          'pokemon/$apiId/sprite_front_default$extension',
-        );
-        updates['spriteFrontDefaultPath'] = path;
-      } catch (e) {
-        // Error silencioso - multimedia puede fallar sin afectar funcionalidad
-      }
-    }
-    
-    if (pokemon.spriteFrontShinyUrl != null) {
-      try {
-        final extension = pokemon.spriteFrontShinyUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
-        final path = await _downloadMediaFile(
-          pokemon.spriteFrontShinyUrl!,
-          'pokemon/$apiId/sprite_front_shiny$extension',
-        );
-        updates['spriteFrontShinyPath'] = path;
-      } catch (e) {
-        // Error silencioso
-      }
-    }
-    
-    if (pokemon.spriteBackDefaultUrl != null) {
-      try {
-        final extension = pokemon.spriteBackDefaultUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
-        final path = await _downloadMediaFile(
-          pokemon.spriteBackDefaultUrl!,
-          'pokemon/$apiId/sprite_back_default$extension',
-        );
-        updates['spriteBackDefaultPath'] = path;
-      } catch (e) {
-        // Error silencioso
-      }
-    }
-    
-    if (pokemon.spriteBackShinyUrl != null) {
-      try {
-        final extension = pokemon.spriteBackShinyUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
-        final path = await _downloadMediaFile(
-          pokemon.spriteBackShinyUrl!,
-          'pokemon/$apiId/sprite_back_shiny$extension',
-        );
-        updates['spriteBackShinyPath'] = path;
-      } catch (e) {
-        // Error silencioso
-      }
-    }
-    
-    // Artwork oficial
-    if (pokemon.artworkOfficialUrl != null) {
-      try {
-        final extension = pokemon.artworkOfficialUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
-        final path = await _downloadMediaFile(
-          pokemon.artworkOfficialUrl!,
-          'pokemon/$apiId/artwork_official$extension',
-        );
-        updates['artworkOfficialPath'] = path;
-      } catch (e) {
-        // Error silencioso
-      }
-    }
-    
-    if (pokemon.artworkOfficialShinyUrl != null) {
-      try {
-        final extension = pokemon.artworkOfficialShinyUrl!.toLowerCase().endsWith('.svg') ? '.svg' : '.png';
-        final path = await _downloadMediaFile(
-          pokemon.artworkOfficialShinyUrl!,
-          'pokemon/$apiId/artwork_official_shiny$extension',
-        );
-        updates['artworkOfficialShinyPath'] = path;
-      } catch (e) {
-        // Error silencioso
-      }
-    }
-    
-    // Cries
-    if (pokemon.cryLatestUrl != null) {
-      try {
-        final path = await _downloadMediaFile(
-          pokemon.cryLatestUrl!,
-          'pokemon/$apiId/cry_latest.ogg',
-        );
-        updates['cryLatestPath'] = path;
-      } catch (e) {
-        // Error silencioso
-      }
-    }
-    
-    if (pokemon.cryLegacyUrl != null) {
-      try {
-        final path = await _downloadMediaFile(
-          pokemon.cryLegacyUrl!,
-          'pokemon/$apiId/cry_legacy.ogg',
-        );
-        updates['cryLegacyPath'] = path;
-      } catch (e) {
-        // Error silencioso
-      }
-    }
-    
-    // Actualizar paths en la DB en transacción
-    if (updates.isNotEmpty) {
-      await database.transaction(() async {
-        final companion = PokemonCompanion(
-          id: Value(pokemon.id),
-          spriteFrontDefaultPath: Value(updates['spriteFrontDefaultPath']),
-          spriteFrontShinyPath: Value(updates['spriteFrontShinyPath']),
-          spriteBackDefaultPath: Value(updates['spriteBackDefaultPath']),
-          spriteBackShinyPath: Value(updates['spriteBackShinyPath']),
-          artworkOfficialPath: Value(updates['artworkOfficialPath']),
-          artworkOfficialShinyPath: Value(updates['artworkOfficialShinyPath']),
-          cryLatestPath: Value(updates['cryLatestPath']),
-          cryLegacyPath: Value(updates['cryLegacyPath']),
-        );
-        
-        await (database.update(database.pokemon)..where((t) => t.id.equals(pokemon.id)))
-          .write(companion);
-      });
-    }
+    // Los campos URL no existen en la tabla Pokemon, la descarga de multimedia
+    // se maneja a través del script PowerShell que genera los ZIPs.
+    // Este método ya no es necesario ya que los archivos vienen en los ZIPs.
   }
   
   /// Descargar archivo multimedia y retornar path local
@@ -2459,10 +2397,19 @@ class DownloadService {
     // Variantes especiales: no se asignan pokedex
     
     // Guardar entradas de pokedex
+    // Obtener el pokemon default de esta especie
+    final pokemonDao = PokemonDao(database);
+    final pokemons = await pokemonDao.getPokemonBySpecies(species.id);
+    if (pokemons.isEmpty) return;
+    final defaultPokemon = pokemons.firstWhere(
+      (p) => p.isDefault,
+      orElse: () => pokemons.first,
+    );
+    
     for (final entry in pokedexToAssign) {
       final companion = PokedexEntriesCompanion.insert(
         pokedexId: entry['pokedexId']!,
-        pokemonSpeciesId: species.id,
+        pokemonId: defaultPokemon.id,
         entryNumber: entry['entryNumber']!,
       );
       

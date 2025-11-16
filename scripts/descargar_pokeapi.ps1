@@ -9,9 +9,9 @@
 # ============================================================
 param(
     [string]$BaseUrl = "https://pokeapi.co/api/v2",
-    [string]$BaseDir = "c:\users\loren\Desktop\pokemon_data",
-    [string]$BackupDir = "c:\users\loren\Desktop\pokemon_data\backup",
-    [switch]$OnlyPhase3 = $false
+    [string]$BaseDir = "$env:USERPROFILE\Desktop\pokemon_data",
+    [string]$BackupDir = "$env:USERPROFILE\Desktop\pokemon_data\backup",
+    [string]$zipBasePath = "$env:USERPROFILE\Desktop\pokemon_data\backup\git_backups"
 )
 
 $ErrorActionPreference = 'Continue'
@@ -723,11 +723,9 @@ function Extract-MediaUrlsFromFiles {
         return $mediaUrls
     }
     
-    Write-Host "Extrayendo URLs multimedia esenciales de todos los urls.txt..." -ForegroundColor DarkYellow
-    Write-Host "  Estrategia: SVG preferido > PNG mayor resolución" -ForegroundColor DarkGray
-    Write-Host "  Normal: dream-world SVG > official-artwork PNG > home PNG" -ForegroundColor DarkGray
-    Write-Host "  Shiny: SVG (si existe) > official-artwork PNG > home PNG" -ForegroundColor DarkGray
-    Write-Host "  Sonido: cries.latest OGG > cries.legacy OGG" -ForegroundColor DarkGray
+    Write-Host "Extrayendo URLs multimedia de todos los urls.txt..." -ForegroundColor DarkYellow
+    Write-Host "  Estrategia: Descargar TODOS los archivos multimedia disponibles" -ForegroundColor DarkGray
+    Write-Host "  Incluye: sprites (front/back, normal/shiny), artwork, cries, versions, etc." -ForegroundColor DarkGray
     $allUrlsFiles = Get-ChildItem -Path $BaseDir -Filter "urls.txt" -Recurse -ErrorAction SilentlyContinue
     
     foreach ($urlsFile in $allUrlsFiles) {
@@ -740,47 +738,19 @@ function Extract-MediaUrlsFromFiles {
             if ($line -match ':\s*"([^"]+)".*multimedia:\s*si') {
                 $foundUrl = $matches[1]
                 
-                # Filtrar solo las URLs esenciales:
-                # 1. SVG o PNG de imagen normal (dream-world SVG > official-artwork PNG > home PNG)
-                # 2. SVG o PNG shiny (SVG poco probable, official-artwork PNG > home PNG)
-                # 3. OGG de cries (latest preferido, legacy como fallback)
-                $isEssential = $false
+                # Descargar TODOS los archivos multimedia (no solo "esenciales")
+                # Esto incluye:
+                # - Sprites default (front/back, normal/shiny)
+                # - Sprites de versions (todas las generaciones y versiones)
+                # - Artwork (official-artwork, dream-world, home)
+                # - Cries (latest y legacy)
+                # - Cualquier otro archivo multimedia
                 $urlLower = $foundUrl.ToLower()
                 
-                # SVG de dream-world (imagen normal, prioridad máxima)
-                if ($urlLower -match 'dream-world.*\.svg$') {
-                    $isEssential = $true
-                }
-                # PNG de official-artwork (imagen normal, fallback si no hay SVG)
-                elseif ($urlLower -match 'official-artwork.*front_default.*\.png$' -and -not $urlLower.Contains('shiny')) {
-                    $isEssential = $true
-                }
-                # PNG de home (imagen normal, último fallback)
-                elseif ($urlLower -match 'home.*front_default.*\.png$' -and -not $urlLower.Contains('shiny')) {
-                    $isEssential = $true
-                }
-                # PNG shiny de official-artwork (imagen shiny, prioridad)
-                elseif ($urlLower -match 'official-artwork.*shiny.*\.png$') {
-                    $isEssential = $true
-                }
-                # PNG shiny de home (imagen shiny, fallback)
-                elseif ($urlLower -match 'home.*shiny.*\.png$') {
-                    $isEssential = $true
-                }
-                # SVG shiny (si existe en alguna ubicación, poco probable)
-                elseif ($urlLower -match '.*shiny.*\.svg$') {
-                    $isEssential = $true
-                }
-                # OGG de cries.latest (prioridad)
-                elseif ($urlLower -match 'cries.*latest.*\.ogg$') {
-                    $isEssential = $true
-                }
-                # OGG de cries.legacy (fallback si no hay latest)
-                elseif ($urlLower -match 'cries.*legacy.*\.ogg$') {
-                    $isEssential = $true
-                }
+                # Filtrar solo archivos multimedia válidos (imágenes, audio, video)
+                $isMedia = $urlLower -match '\.(png|jpg|jpeg|gif|svg|webp|bmp|ogg|mp3|wav|mp4|webm)$'
                 
-                if (-not $isEssential) {
+                if (-not $isMedia) {
                     continue
                 }
                 
@@ -877,24 +847,30 @@ function Extract-MediaUrlsFromFiles {
                     }
                     
                     # Descargar imagen normal con nombre específico
+                    # Formato: pokemon_{id}_default_{filename}.{ext}
                     if ($null -ne $normalUrl -and $null -ne $normalFileName) {
                         if (-not $processedUrls.Contains($normalUrl)) {
                             $mediaPath = $pokemonDir.FullName
-                            $mediaFilePath = Join-Path $mediaPath $normalFileName
+                            # Nombre: pokemon_{id}_default_{filename}.{ext}
+                            $baseFileName = [System.IO.Path]::GetFileNameWithoutExtension($normalFileName)
+                            $newFileName = "pokemon_$pokemonApiId" + "_default_$baseFileName.$normalExt"
+                            $mediaFilePath = Join-Path $mediaPath $newFileName
                             
                             if (-not (Test-Path $mediaFilePath)) {
                                 $null = $mediaUrls.Add(@{
                                     Url = $normalUrl
                                     DestPath = $mediaFilePath
                                     ParentPath = $mediaPath
-                                    FileName = $normalFileName
+                                    FileName = $newFileName
                                 })
                                 $processedUrls.Add($normalUrl) | Out-Null
                             }
                         }
                         
                         # También crear artwork_official con el mismo archivo (para PokemonImageHelper)
-                        $artworkFileName = "artwork_official.$normalExt"
+                        # Formato: pokemon_{id}_default_artwork_official.{ext}
+                        $artworkBaseName = "artwork_official"
+                        $artworkFileName = "pokemon_$pokemonApiId" + "_default_$artworkBaseName.$normalExt"
                         $artworkFilePath = Join-Path $mediaPath $artworkFileName
                         if (-not (Test-Path $artworkFilePath)) {
                             $null = $mediaUrls.Add(@{
@@ -903,7 +879,7 @@ function Extract-MediaUrlsFromFiles {
                                 ParentPath = $mediaPath
                                 FileName = $artworkFileName
                                 IsCopy = $true  # Marcar como copia del mismo archivo
-                                SourceFile = $normalFileName
+                                SourceFile = "pokemon_$pokemonApiId" + "_default_$baseFileName.$normalExt"
                             })
                         }
                     }
@@ -946,24 +922,30 @@ function Extract-MediaUrlsFromFiles {
                     }
                     
                     # Descargar imagen shiny con nombre específico
+                    # Formato: pokemon_{id}_default_{filename}.{ext}
                     if ($null -ne $shinyUrl -and $null -ne $shinyFileName) {
                         if (-not $processedUrls.Contains($shinyUrl)) {
                             $mediaPath = $pokemonDir.FullName
-                            $mediaFilePath = Join-Path $mediaPath $shinyFileName
+                            # Nombre: pokemon_{id}_default_{filename}.{ext}
+                            $baseFileName = [System.IO.Path]::GetFileNameWithoutExtension($shinyFileName)
+                            $newFileName = "pokemon_$pokemonApiId" + "_default_$baseFileName.$shinyExt"
+                            $mediaFilePath = Join-Path $mediaPath $newFileName
                             
                             if (-not (Test-Path $mediaFilePath)) {
                                 $null = $mediaUrls.Add(@{
                                     Url = $shinyUrl
                                     DestPath = $mediaFilePath
                                     ParentPath = $mediaPath
-                                    FileName = $shinyFileName
+                                    FileName = $newFileName
                                 })
                                 $processedUrls.Add($shinyUrl) | Out-Null
                             }
                         }
                         
                         # También crear artwork_official_shiny con el mismo archivo
-                        $artworkShinyFileName = "artwork_official_shiny.$shinyExt"
+                        # Formato: pokemon_{id}_default_artwork_official_shiny.{ext}
+                        $artworkShinyBaseName = "artwork_official_shiny"
+                        $artworkShinyFileName = "pokemon_$pokemonApiId" + "_default_$artworkShinyBaseName.$shinyExt"
                         $artworkShinyFilePath = Join-Path $mediaPath $artworkShinyFileName
                         if (-not (Test-Path $artworkShinyFilePath)) {
                             $null = $mediaUrls.Add(@{
@@ -972,8 +954,116 @@ function Extract-MediaUrlsFromFiles {
                                 ParentPath = $mediaPath
                                 FileName = $artworkShinyFileName
                                 IsCopy = $true
-                                SourceFile = $shinyFileName
+                                SourceFile = "pokemon_$pokemonApiId" + "_default_$baseFileName.$shinyExt"
                             })
+                        }
+                    }
+                    
+                    # ============================================
+                    # DESCARGAR SPRITES DE BACK (back_default, back_shiny)
+                    # ============================================
+                    # Back default
+                    if ($sprites.back_default) {
+                        $backDefaultUrl = $sprites.back_default
+                        if ($null -ne $backDefaultUrl -and $backDefaultUrl -is [string] -and $backDefaultUrl.Length -gt 0) {
+                            $ext = [System.IO.Path]::GetExtension($backDefaultUrl).TrimStart('.')
+                            if ([string]::IsNullOrWhiteSpace($ext)) { $ext = "png" }
+                            
+                            $backDefaultFileName = "pokemon_$pokemonApiId" + "_default_sprite_back_default.$ext"
+                            $backDefaultFilePath = Join-Path $pokemonDir.FullName $backDefaultFileName
+                            
+                            if (-not $processedUrls.Contains($backDefaultUrl) -and -not (Test-Path $backDefaultFilePath)) {
+                                $null = $mediaUrls.Add(@{
+                                    Url = $backDefaultUrl
+                                    DestPath = $backDefaultFilePath
+                                    ParentPath = $pokemonDir.FullName
+                                    FileName = $backDefaultFileName
+                                })
+                                $processedUrls.Add($backDefaultUrl) | Out-Null
+                            }
+                        }
+                    }
+                    
+                    # Back shiny
+                    if ($sprites.back_shiny) {
+                        $backShinyUrl = $sprites.back_shiny
+                        if ($null -ne $backShinyUrl -and $backShinyUrl -is [string] -and $backShinyUrl.Length -gt 0) {
+                            $ext = [System.IO.Path]::GetExtension($backShinyUrl).TrimStart('.')
+                            if ([string]::IsNullOrWhiteSpace($ext)) { $ext = "png" }
+                            
+                            $backShinyFileName = "pokemon_$pokemonApiId" + "_default_sprite_back_shiny.$ext"
+                            $backShinyFilePath = Join-Path $pokemonDir.FullName $backShinyFileName
+                            
+                            if (-not $processedUrls.Contains($backShinyUrl) -and -not (Test-Path $backShinyFilePath)) {
+                                $null = $mediaUrls.Add(@{
+                                    Url = $backShinyUrl
+                                    DestPath = $backShinyFilePath
+                                    ParentPath = $pokemonDir.FullName
+                                    FileName = $backShinyFileName
+                                })
+                                $processedUrls.Add($backShinyUrl) | Out-Null
+                            }
+                        }
+                    }
+                    
+                    # ============================================
+                    # DESCARGAR TODOS LOS SPRITES DE VERSIONS (sprites.versions)
+                    # Para cada generación/juego, descargar TODOS los sprites disponibles:
+                    # - front_default, front_shiny, front_transparent, front_shiny_transparent, front_gray
+                    # - back_default, back_shiny, back_transparent, back_shiny_transparent, back_gray
+                    # ============================================
+                    if ($sprites.versions) {
+                        $versions = $sprites.versions
+                        $mediaPath = $pokemonDir.FullName
+                        
+                        # Lista de propiedades de sprites a descargar
+                        $spriteProperties = @(
+                            'front_default', 'front_shiny', 'front_transparent', 'front_shiny_transparent', 'front_gray',
+                            'back_default', 'back_shiny', 'back_transparent', 'back_shiny_transparent', 'back_gray'
+                        )
+                        
+                        # Iterar sobre todas las generaciones
+                        foreach ($genProp in $versions.PSObject.Properties) {
+                            $genName = $genProp.Name  # ej: "generation-i", "generation-ii", etc.
+                            $genData = $genProp.Value
+                            
+                            if ($null -eq $genData) { continue }
+                            
+                            # Iterar sobre todos los version-groups de esta generación
+                            foreach ($vgProp in $genData.PSObject.Properties) {
+                                $vgName = $vgProp.Name  # ej: "red-blue", "yellow", "crystal", etc.
+                                $vgData = $vgProp.Value
+                                
+                                if ($null -eq $vgData) { continue }
+                                
+                                # Normalizar nombres de generación y versión
+                                        $genNormalized = $genName -replace '-', '_'
+                                        $vgNormalized = $vgName -replace '-', '_'
+                                
+                                # Descargar TODOS los sprites disponibles
+                                foreach ($spriteProp in $spriteProperties) {
+                                    $spriteUrl = $vgData.$spriteProp
+                                    
+                                    if ($null -ne $spriteUrl -and $spriteUrl -is [string] -and $spriteUrl.Length -gt 0) {
+                                        $ext = [System.IO.Path]::GetExtension($spriteUrl).TrimStart('.')
+                                        if ([string]::IsNullOrWhiteSpace($ext)) { $ext = "png" }
+                                        
+                                        # Nombre: pokemon_{id}_{generation}_{version}_{sprite_property}.{ext}
+                                        $fileName = "pokemon_$pokemonApiId" + "_$genNormalized" + "_$vgNormalized" + "_$spriteProp.$ext"
+                                        $filePath = Join-Path $mediaPath $fileName
+                                        
+                                        if (-not $processedUrls.Contains($spriteUrl) -and -not (Test-Path $filePath)) {
+                                            $null = $mediaUrls.Add(@{
+                                                Url = $spriteUrl
+                                                DestPath = $filePath
+                                                ParentPath = $mediaPath
+                                                FileName = $fileName
+                                            })
+                                            $processedUrls.Add($spriteUrl) | Out-Null
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -997,29 +1087,33 @@ function Extract-MediaUrlsFromFiles {
                     }
                     
                     # Descargar cry_latest.ogg
+                    # Formato: pokemon_{id}_default_cry_latest.ogg
                     if ($null -ne $cryLatestUrl) {
                         if (-not $processedUrls.Contains($cryLatestUrl)) {
-                            $cryLatestFilePath = Join-Path $mediaPath "cry_latest.ogg"
+                            $cryLatestFileName = "pokemon_$pokemonApiId" + "_default_cry_latest.ogg"
+                            $cryLatestFilePath = Join-Path $mediaPath $cryLatestFileName
                             if (-not (Test-Path $cryLatestFilePath)) {
                                 $null = $mediaUrls.Add(@{
                                     Url = $cryLatestUrl
                                     DestPath = $cryLatestFilePath
                                     ParentPath = $mediaPath
-                                    FileName = "cry_latest.ogg"
+                                    FileName = $cryLatestFileName
                                 })
                                 $processedUrls.Add($cryLatestUrl) | Out-Null
                             }
                         }
                         
                         # Si latest está disponible, también añadir legacy como fallback
+                        # Formato: pokemon_{id}_default_cry_legacy.ogg
                         if ($null -ne $cryLegacyUrl -and -not $processedUrls.Contains($cryLegacyUrl)) {
-                            $cryLegacyFilePath = Join-Path $mediaPath "cry_legacy.ogg"
+                            $cryLegacyFileName = "pokemon_$pokemonApiId" + "_default_cry_legacy.ogg"
+                            $cryLegacyFilePath = Join-Path $mediaPath $cryLegacyFileName
                             if (-not (Test-Path $cryLegacyFilePath)) {
                                 $null = $mediaUrls.Add(@{
                                     Url = $cryLegacyUrl
                                     DestPath = $cryLegacyFilePath
                                     ParentPath = $mediaPath
-                                    FileName = "cry_legacy.ogg"
+                                    FileName = $cryLegacyFileName
                                     IsFallback = $true
                                     PrimaryUrl = $cryLatestUrl
                                 })
@@ -1028,15 +1122,17 @@ function Extract-MediaUrlsFromFiles {
                         }
                     }
                     # Si latest no está disponible, usar legacy directamente
+                    # Formato: pokemon_{id}_default_cry_legacy.ogg
                     elseif ($null -ne $cryLegacyUrl) {
                         if (-not $processedUrls.Contains($cryLegacyUrl)) {
-                            $cryLegacyFilePath = Join-Path $mediaPath "cry_legacy.ogg"
+                            $cryLegacyFileName = "pokemon_$pokemonApiId" + "_default_cry_legacy.ogg"
+                            $cryLegacyFilePath = Join-Path $mediaPath $cryLegacyFileName
                             if (-not (Test-Path $cryLegacyFilePath)) {
                                 $null = $mediaUrls.Add(@{
                                     Url = $cryLegacyUrl
                                     DestPath = $cryLegacyFilePath
                                     ParentPath = $mediaPath
-                                    FileName = "cry_legacy.ogg"
+                                    FileName = $cryLegacyFileName
                                 })
                                 $processedUrls.Add($cryLegacyUrl) | Out-Null
                             }
@@ -1072,16 +1168,26 @@ function Extract-MediaUrlsFromFiles {
             try {
                 $data = Get-Content $dataJson -Raw | ConvertFrom-Json
                 $itemApiId = $itemDir.Name
+                $itemName = $data.name
                 $mediaPath = $itemDir.FullName
                 
                 # Extraer sprites de items (default sprite)
+                # Formato: item_{id}_default_{filename}.{ext}
                 if ($data.sprites -and $data.sprites.default) {
                     $spriteUrl = $data.sprites.default
                     if ($null -ne $spriteUrl -and $spriteUrl -is [string] -and $spriteUrl.Length -gt 0) {
-                        $fileName = Split-Path $spriteUrl -Leaf
-                        if ([string]::IsNullOrWhiteSpace($fileName)) {
-                            $fileName = "default.png"
+                        $ext = [System.IO.Path]::GetExtension($spriteUrl).TrimStart('.')
+                        if ([string]::IsNullOrWhiteSpace($ext)) { $ext = "png" }
+                        
+                        # Extraer nombre base del archivo de la URL
+                        $urlFileName = Split-Path $spriteUrl -Leaf
+                        $baseFileName = [System.IO.Path]::GetFileNameWithoutExtension($urlFileName)
+                        if ([string]::IsNullOrWhiteSpace($baseFileName)) {
+                            $baseFileName = "sprite"
                         }
+                        
+                        # Nombre: item_{id}_default_{filename}.{ext}
+                        $fileName = "item_$itemApiId" + "_default_$baseFileName.$ext"
                         $mediaFilePath = Join-Path $mediaPath $fileName
                         
                         if (-not $processedUrls.Contains($spriteUrl) -and -not (Test-Path $mediaFilePath)) {
@@ -1100,6 +1206,87 @@ function Extract-MediaUrlsFromFiles {
             }
             catch {
                 Write-Warning "  [AVISO] Error procesando item $($itemDir.Name): $_"
+            }
+        }
+    }
+    
+    # Extraer URLs multimedia de tipos
+    Write-Host "Extrayendo URLs multimedia de JSONs de tipos..." -ForegroundColor DarkYellow
+    $typesPath = Join-Path $BaseDir "type"
+    if (Test-Path $typesPath) {
+        $typeDirs = Get-ChildItem -Path $typesPath -Directory -ErrorAction SilentlyContinue
+        $processed = 0
+        $total = $typeDirs.Count
+        
+        foreach ($typeDir in $typeDirs) {
+            $dataJson = Join-Path $typeDir.FullName "data.json"
+            if (-not (Test-Path $dataJson)) { continue }
+            
+            $processed++
+            if ($processed % 20 -eq 0) {
+                Write-Host "  Procesando tipo $processed/$total..." -ForegroundColor DarkGray
+            }
+            
+            try {
+                $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+                $typeApiId = $data.id
+                $typeName = $data.name
+                $mediaPath = $typeDir.FullName
+                
+                # Extraer sprites de tipos con estructura generation-{i}.{version-group}.name_icon
+                if ($data.sprites) {
+                    $sprites = $data.sprites
+                    
+                    # Iterar sobre todas las generaciones
+                    foreach ($genProp in $sprites.PSObject.Properties) {
+                        $genName = $genProp.Name  # ej: "generation-iii", "generation-iv", etc.
+                        
+                        # Algunos pueden ser objetos simples (no generaciones)
+                        if ($genName -notmatch '^generation-') { continue }
+                        
+                        $genData = $genProp.Value
+                        if ($null -eq $genData) { continue }
+                        
+                        # Iterar sobre todos los version-groups de esta generación
+                        foreach ($vgProp in $genData.PSObject.Properties) {
+                            $vgName = $vgProp.Name  # ej: "red-blue", "yellow", "crystal", etc.
+                            $vgData = $vgProp.Value
+                            
+                            if ($null -eq $vgData) { continue }
+                            
+                            # Descargar name_icon
+                            # Formato: type_{id}_{generation}_{version}_name_icon.{ext}
+                            if ($vgData.name_icon) {
+                                $iconUrl = $vgData.name_icon
+                                if ($null -ne $iconUrl -and $iconUrl -is [string] -and $iconUrl.Length -gt 0) {
+                                    $ext = [System.IO.Path]::GetExtension($iconUrl).TrimStart('.')
+                                    if ([string]::IsNullOrWhiteSpace($ext)) { $ext = "png" }
+                                    
+                                    # Nombre: type_{id}_{generation}_{version}_name_icon.{ext}
+                                    $genNormalized = $genName -replace '-', '_'
+                                    $vgNormalized = $vgName -replace '-', '_'
+                                    $fileName = "type_$typeApiId" + "_$genNormalized" + "_$vgNormalized" + "_name_icon.$ext"
+                                    $filePath = Join-Path $mediaPath $fileName
+                                    
+                                    if (-not $processedUrls.Contains($iconUrl) -and -not (Test-Path $filePath)) {
+                                        $null = $mediaUrls.Add(@{
+                                            Url = $iconUrl
+                                            DestPath = $filePath
+                                            ParentPath = $mediaPath
+                                            FileName = $fileName
+                                        })
+                                        $processedUrls.Add($iconUrl) | Out-Null
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                $data = $null
+            }
+            catch {
+                Write-Warning "  [AVISO] Error procesando tipo $($typeDir.Name): $_"
             }
         }
     }
@@ -1134,20 +1321,20 @@ function Extract-MediaUrlsFromFiles {
                     if ($sprites.front_default) {
                         $spriteUrl = $sprites.front_default
                         if ($null -ne $spriteUrl -and $spriteUrl -is [string] -and $spriteUrl.Length -gt 0) {
-                            $fileName = Split-Path $spriteUrl -Leaf
+                        $fileName = Split-Path $spriteUrl -Leaf
                             if ([string]::IsNullOrWhiteSpace($fileName)) {
                                 $fileName = "front_default.png"
-                            }
-                            $mediaFilePath = Join-Path $mediaPath $fileName
-                            
+                        }
+                        $mediaFilePath = Join-Path $mediaPath $fileName
+                        
                             if (-not $processedUrls.Contains($spriteUrl) -and -not (Test-Path $mediaFilePath)) {
-                                $null = $mediaUrls.Add(@{
-                                    Url = $spriteUrl
-                                    DestPath = $mediaFilePath
-                                    ParentPath = $mediaPath
+                            $null = $mediaUrls.Add(@{
+                                Url = $spriteUrl
+                                DestPath = $mediaFilePath
+                                ParentPath = $mediaPath
                                     FileName = $fileName
-                                })
-                                $processedUrls.Add($spriteUrl) | Out-Null
+                            })
+                            $processedUrls.Add($spriteUrl) | Out-Null
                             }
                         }
                     }
@@ -1194,16 +1381,16 @@ function Extract-MediaUrlsFromFiles {
                             $fileName = Split-Path $spriteUrl -Leaf
                             if ([string]::IsNullOrWhiteSpace($fileName)) {
                                 $fileName = "front_default.png"
-                            }
-                            $mediaFilePath = Join-Path $mediaPath $fileName
-                            
+                        }
+                        $mediaFilePath = Join-Path $mediaPath $fileName
+                        
                             if (-not $processedUrls.Contains($spriteUrl) -and -not (Test-Path $mediaFilePath)) {
-                                $null = $mediaUrls.Add(@{
+                            $null = $mediaUrls.Add(@{
                                     Url = $spriteUrl
-                                    DestPath = $mediaFilePath
-                                    ParentPath = $mediaPath
+                                DestPath = $mediaFilePath
+                                ParentPath = $mediaPath
                                     FileName = $fileName
-                                })
+                            })
                                 $processedUrls.Add($spriteUrl) | Out-Null
                             }
                         }
@@ -1342,10 +1529,10 @@ function Download-MediaFilesInParallel($mediaUrls, $batchSize = 10) {
                             Write-Warning "  [ERROR] Fallo al descargar legacy: $fallbackUrl -> $_"
                             $failed++
                         }
-                    }
-                    else {
-                        Write-Warning "  [ERROR] Fallo al descargar: $($result.Url) -> $($result.Error)"
-                        $failed++
+                }
+                else {
+                    Write-Warning "  [ERROR] Fallo al descargar: $($result.Url) -> $($result.Error)"
+                    $failed++
                     }
                 }
             }
@@ -1622,28 +1809,49 @@ function Escape-CsvJson($value) {
     return "`"$json`""
 }
 
-# Función para obtener ruta de asset
+# Función para aplanar nombre de archivo (convertir estructura de directorios a nombre plano)
+# Ejemplo: media/pokemon/1/sprite_front_default.svg -> media_pokemon_1_sprite_front_default.svg
+function Flatten-FileName($relativePath) {
+    if ([string]::IsNullOrWhiteSpace($relativePath)) {
+        return ''
+    }
+    # Normalizar separadores de ruta
+    $normalized = $relativePath -replace '\\', '/'
+    # Remover prefijo assets/ si existe
+    if ($normalized.StartsWith('assets/')) {
+        $normalized = $normalized.Substring(7)
+    }
+    # Reemplazar todos los separadores / por _
+    $flattened = $normalized -replace '/', '_'
+    return $flattened
+}
+
+# Función para obtener ruta de asset (ahora con nombre aplanado para Flutter)
+# IMPORTANTE: Los CSV deben usar esta función para que las rutas coincidan con los nombres aplanados
 function Get-AssetPath($relativePath) {
     if ([string]::IsNullOrWhiteSpace($relativePath)) {
         return ''
     }
-    # Normalizar separadores de ruta y añadir prefijo assets/
-    $normalized = $relativePath -replace '\\', '/'
-    if (-not $normalized.StartsWith('assets/')) {
-        $normalized = "assets/$normalized"
+    # Aplanar el nombre (Flutter no puede crear directorios anidados)
+    $flattened = Flatten-FileName $relativePath
+    # Añadir prefijo assets/ si no está
+    if (-not $flattened.StartsWith('assets/')) {
+        $flattened = "assets/$flattened"
     }
-    return $normalized
+    return $flattened
 }
 
-# Función para copiar archivos multimedia ya descargados (simplificada - los archivos ya tienen los nombres correctos)
+# Función para copiar archivos multimedia con nombres aplanados (para Flutter)
+# Los archivos se organizan por tipo en subcarpetas (pokemon, item, etc.) pero con nombres aplanados
 function Copy-PokemonMediaFiles($pokemonApiId, $dataDir, $mediaDir) {
     $pokemonSourceDir = Join-Path $dataDir "pokemon\$pokemonApiId"
-    $pokemonMediaDir = Join-Path $mediaDir "pokemon\$pokemonApiId"
     
     if (-not (Test-Path $pokemonSourceDir)) {
         return @{}
     }
     
+    # Crear carpeta pokemon dentro de mediaDir (organización por tipo)
+    $pokemonMediaDir = Join-Path $mediaDir "pokemon"
     if (-not (Test-Path $pokemonMediaDir)) {
         try {
             New-Item -ItemType Directory -Force -Path $pokemonMediaDir | Out-Null
@@ -1663,59 +1871,147 @@ function Copy-PokemonMediaFiles($pokemonApiId, $dataDir, $mediaDir) {
         cryLegacyPath = $null
     }
     
-    # Los archivos ya están descargados con los nombres correctos, solo copiarlos
-    $expectedFiles = @(
-        @{Name="sprite_front_default.svg"; Path="spriteFrontDefaultPath"},
-        @{Name="sprite_front_default.png"; Path="spriteFrontDefaultPath"},
-        @{Name="sprite_front_shiny.svg"; Path="spriteFrontShinyPath"},
-        @{Name="sprite_front_shiny.png"; Path="spriteFrontShinyPath"},
-        @{Name="sprite_back_default.png"; Path="spriteBackDefaultPath"},
-        @{Name="sprite_back_shiny.png"; Path="spriteBackShinyPath"},
-        @{Name="artwork_official.svg"; Path="artworkOfficialPath"},
-        @{Name="artwork_official.png"; Path="artworkOfficialPath"},
-        @{Name="artwork_official_shiny.svg"; Path="artworkOfficialShinyPath"},
-        @{Name="artwork_official_shiny.png"; Path="artworkOfficialShinyPath"},
-        @{Name="cry_latest.ogg"; Path="cryLatestPath"},
-        @{Name="cry_legacy.ogg"; Path="cryLegacyPath"}
-    )
+    # Copiar TODOS los archivos multimedia descargados con nombres aplanados
+    # Buscar TODOS los archivos multimedia (imágenes, audio) en el directorio del pokemon
+    $allMediaFiles = Get-ChildItem -Path $pokemonSourceDir -File -ErrorAction SilentlyContinue | Where-Object {
+        $_.Extension -match '\.(png|jpg|jpeg|gif|svg|webp|bmp|ogg|mp3|wav)$' -or
+        $_.Name -match "^pokemon_$pokemonApiId"
+    }
     
-    foreach ($expectedFile in $expectedFiles) {
-        $sourcePath = Join-Path $pokemonSourceDir $expectedFile.Name
-        $targetPath = Join-Path $pokemonMediaDir $expectedFile.Name
+    foreach ($mediaFile in $allMediaFiles) {
+        # El nombre puede seguir diferentes formatos:
+        # - pokemon_{id}_default_{filename}.{ext}
+        # - pokemon_{id}_{generation}_{version}_{filename}.{ext}
+        # - Cualquier otro nombre de archivo multimedia
         
-        if (Test-Path $sourcePath) {
-            if (-not (Test-Path $targetPath)) {
-                Copy-Item -Path $sourcePath -Destination $targetPath -Force -ErrorAction SilentlyContinue
-            }
-            if (Test-Path $targetPath) {
-                $mediaPaths[$expectedFile.Path] = Get-AssetPath "media/pokemon/$pokemonApiId/$($expectedFile.Name)"
-            }
-        } else {
-            # Si el archivo no existe, intentar buscar variantes (ej: artwork_official.svg vs artwork_official.png)
-            # Solo para artwork_official y artwork_official_shiny
-            if ($expectedFile.Name -match '^artwork_official') {
-                $baseName = $expectedFile.Name -replace '\.(svg|png)$', ''
-                $alternatives = @("$baseName.svg", "$baseName.png")
-                foreach ($alt in $alternatives) {
-                    $altSourcePath = Join-Path $pokemonSourceDir $alt
-                    if (Test-Path $altSourcePath) {
-                        $targetPath = Join-Path $pokemonMediaDir $expectedFile.Name
-                        $targetDir = Split-Path $targetPath -Parent
-                        if (-not (Test-Path $targetDir)) {
-                            New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-                        }
-                        Copy-Item -Path $altSourcePath -Destination $targetPath -Force -ErrorAction SilentlyContinue
-                        if (Test-Path $targetPath) {
-                            $mediaPaths[$expectedFile.Path] = Get-AssetPath "media/pokemon/$pokemonApiId/$($expectedFile.Name)"
-                            break
-                        }
-                    }
-                }
-            }
+        # Crear nombre aplanado: media_{filename_completo}
+        $flattenedName = "media_" + $mediaFile.Name
+        $targetPath = Join-Path $pokemonMediaDir $flattenedName
+        
+        if (-not (Test-Path $targetPath)) {
+            Copy-Item -Path $mediaFile.FullName -Destination $targetPath -Force -ErrorAction SilentlyContinue
+        }
+        
+        # Mapear a las rutas del CSV según el tipo de archivo (solo para archivos default conocidos)
+        # IMPORTANTE: Los archivos se llaman media_pokemon_{id}_default_{filename}.{ext}
+        # Las rutas deben coincidir con estos nombres
+        if ($mediaFile.Name -match "_default_sprite_front_default") {
+            $mediaPaths['spriteFrontDefaultPath'] = "assets/media_" + $mediaFile.Name
+        } elseif ($mediaFile.Name -match "_default_sprite_front_shiny") {
+            $mediaPaths['spriteFrontShinyPath'] = "assets/media_" + $mediaFile.Name
+        } elseif ($mediaFile.Name -match "_default_sprite_back_default") {
+            $mediaPaths['spriteBackDefaultPath'] = "assets/media_" + $mediaFile.Name
+        } elseif ($mediaFile.Name -match "_default_sprite_back_shiny") {
+            $mediaPaths['spriteBackShinyPath'] = "assets/media_" + $mediaFile.Name
+        } elseif ($mediaFile.Name -match "_default_artwork_official" -and $mediaFile.Name -notmatch "shiny") {
+            $mediaPaths['artworkOfficialPath'] = "assets/media_" + $mediaFile.Name
+        } elseif ($mediaFile.Name -match "_default_artwork_official_shiny") {
+            $mediaPaths['artworkOfficialShinyPath'] = "assets/media_" + $mediaFile.Name
+        } elseif ($mediaFile.Name -match "_default_cry_latest") {
+            $mediaPaths['cryLatestPath'] = "assets/media_" + $mediaFile.Name
+        } elseif ($mediaFile.Name -match "_default_cry_legacy") {
+            $mediaPaths['cryLegacyPath'] = "assets/media_" + $mediaFile.Name
         }
     }
     
     return $mediaPaths
+}
+
+# Función para copiar archivos multimedia de items con nombres aplanados (para Flutter)
+function Copy-ItemMediaFiles($itemApiId, $itemName, $dataDir, $mediaDir) {
+    $itemSourceDir = Join-Path $dataDir "item\$itemApiId"
+    
+    if (-not (Test-Path $itemSourceDir)) {
+        return
+    }
+    
+    # Crear carpeta item dentro de mediaDir (organización por tipo)
+    $itemMediaDir = Join-Path $mediaDir "item"
+    if (-not (Test-Path $itemMediaDir)) {
+        try {
+            New-Item -ItemType Directory -Force -Path $itemMediaDir | Out-Null
+        } catch {
+            return
+        }
+    }
+    
+    # Copiar todos los archivos multimedia del item con nombres aplanados
+    # Formato: media_item_{id}_default_{filename}.{ext}
+    $itemMediaFiles = Get-ChildItem -Path $itemSourceDir -File -ErrorAction SilentlyContinue | Where-Object {
+        $_.Extension -match '\.(svg|png|jpg|jpeg)$'
+    }
+    
+    foreach ($itemFile in $itemMediaFiles) {
+        # Extraer nombre base y extensión
+        $baseFileName = [System.IO.Path]::GetFileNameWithoutExtension($itemFile.Name)
+        $ext = $itemFile.Extension.TrimStart('.')
+        
+        # Si el nombre ya sigue el formato item_{id}_default_{filename}, mantenerlo
+        # Si no, crear nuevo nombre: media_item_{id}_default_{filename}.{ext}
+        if ($itemFile.Name -match "^item_$itemApiId" + "_default_") {
+            $flattenedName = "media_" + $itemFile.Name
+        } else {
+            $flattenedName = "media_item_$itemApiId" + "_default_$baseFileName.$ext"
+        }
+        
+        $targetPath = Join-Path $itemMediaDir $flattenedName
+        
+        if (-not (Test-Path $targetPath)) {
+            Copy-Item -Path $itemFile.FullName -Destination $targetPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# Función para copiar archivos multimedia de tipos con nombres aplanados (para Flutter)
+function Copy-TypeMediaFiles($typeApiId, $typeName, $dataDir, $mediaDir) {
+    $typeSourceDir = Join-Path $dataDir "type\$typeApiId"
+    
+    if (-not (Test-Path $typeSourceDir)) {
+        return
+    }
+    
+    # Crear carpeta type dentro de mediaDir (organización por tipo)
+    $typeMediaDir = Join-Path $mediaDir "type"
+    if (-not (Test-Path $typeMediaDir)) {
+        try {
+            New-Item -ItemType Directory -Force -Path $typeMediaDir | Out-Null
+        } catch {
+            return
+        }
+    }
+    
+    # Copiar todos los archivos multimedia del tipo con nombres aplanados
+    # Formato: media_type_{id}_{generation}_{version}_{filename}.{ext}
+    $typeMediaFiles = Get-ChildItem -Path $typeSourceDir -File -ErrorAction SilentlyContinue | Where-Object {
+        $_.Extension -match '\.(svg|png|jpg|jpeg)$'
+    }
+    
+    foreach ($typeFile in $typeMediaFiles) {
+        # Si el nombre ya sigue el formato type_{id}_{generation}_{version}_{filename}, mantenerlo
+        # Si no, intentar extraer información del nombre antiguo
+        if ($typeFile.Name -match "^type_$typeApiId" + "_") {
+            $flattenedName = "media_" + $typeFile.Name
+        } else {
+            # Intentar parsear nombre antiguo: type_{name}_generation_{gen}_{version-group}_{filename}.{ext}
+            # Convertir a nuevo formato: media_type_{id}_{gen}_{version}_{filename}.{ext}
+            $oldName = $typeFile.Name
+            if ($oldName -match "^type_([^_]+)_generation_([^_]+)_([^_]+)_(.+)$") {
+                $genName = $matches[2]
+                $vgName = $matches[3]
+                $filename = $matches[4]
+                $flattenedName = "media_type_$typeApiId" + "_$genName" + "_$vgName" + "_$filename"
+            } else {
+                # Fallback: usar nombre original con prefijo media_
+                $flattenedName = "media_type_$typeApiId" + "_" + $typeFile.Name
+            }
+        }
+        
+        $targetPath = Join-Path $typeMediaDir $flattenedName
+        
+        if (-not (Test-Path $targetPath)) {
+            Copy-Item -Path $typeFile.FullName -Destination $targetPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 # ============================================================
@@ -1784,7 +2080,7 @@ function Generate-GenerationsCsv($dataDir) {
 
 function Generate-RegionsCsv($dataDir) {
     $rows = @()
-    $header = "id;api_id;name;main_generation_id;locations_json;pokedexes_json;version_groups_json"
+    $header = "id;api_id;name;main_generation_id;locations_json;pokedexes_json;version_groups_json;processed_starters_json"
     $rows += $header
     
     $regionsPath = Join-Path $dataDir "region"
@@ -1808,20 +2104,26 @@ function Generate-RegionsCsv($dataDir) {
             $mainGenId = Get-DbId "generations" $mainGenApiId
         }
         
-        $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$(Escape-CsvValue $mainGenId);$(Escape-CsvJson $data.locations);$(Escape-CsvJson $data.pokedexes);$(Escape-CsvJson $data.version_groups)"
+        # Obtener processed_starters si existe
+        $processedStarters = $null
+        if ($data.PSObject.Properties['processed_starters']) {
+            $processedStarters = $data.processed_starters
+        }
+        
+        $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$(Escape-CsvValue $mainGenId);$(Escape-CsvJson $data.locations);$(Escape-CsvJson $data.pokedexes);$(Escape-CsvJson $data.version_groups);$(Escape-CsvJson $processedStarters)"
         $rows += $row
     }
     
-    # Añadir región Nacional (especial)
+    # Añadir región National (especial, sin región física)
     $nationalApiId = 9999
     $nationalDbId = Get-DbId "regions" $nationalApiId
-    $row = "$nationalDbId;$nationalApiId;Nacional;;;"
+    $row = "$nationalDbId;$nationalApiId;national;;;;"
     $rows += $row
     
     return $rows
 }
 
-function Generate-TypesCsv($dataDir) {
+function Generate-TypesCsv($dataDir, $mediaDir) {
     $rows = @()
     $header = "id;api_id;name;generation_id;move_damage_class_id;color;damage_relations_json"
     $rows += $header
@@ -1840,6 +2142,10 @@ function Generate-TypesCsv($dataDir) {
         $data = Get-Content $dataJson -Raw | ConvertFrom-Json
         $apiId = $data.id
         $dbId = Get-DbId "types" $apiId
+        $typeName = $data.name
+        
+        # Copiar multimedia de tipos con nombres aplanados (para Flutter)
+        Copy-TypeMediaFiles $apiId $typeName $dataDir $mediaDir
         
         $genId = $null
         if ($data.generation) {
@@ -2207,24 +2513,10 @@ function Generate-ItemsCsv($dataDir, $mediaDir) {
         $data = Get-Content $dataJson -Raw | ConvertFrom-Json
         $apiId = $data.id
         $dbId = Get-DbId "items" $apiId
+        $itemName = $data.name
         
-        # Copiar multimedia de items (simplificado - solo copiar archivos existentes)
-        $itemSourceDir = Join-Path $dataDir "item\$apiId"
-        $itemMediaDir = Join-Path $mediaDir "item\$apiId"
-        if (Test-Path $itemSourceDir) {
-            if (-not (Test-Path $itemMediaDir)) {
-                New-Item -ItemType Directory -Force -Path $itemMediaDir | Out-Null
-            }
-            $itemMediaFiles = Get-ChildItem -Path $itemSourceDir -File -ErrorAction SilentlyContinue | Where-Object {
-                $_.Extension -match '\.(svg|png|jpg|jpeg)$'
-            }
-            foreach ($itemFile in $itemMediaFiles) {
-                $targetPath = Join-Path $itemMediaDir $itemFile.Name
-                if (-not (Test-Path $targetPath)) {
-                    Copy-Item -Path $itemFile.FullName -Destination $targetPath -Force -ErrorAction SilentlyContinue
-                }
-            }
-        }
+        # Copiar multimedia de items con nombres aplanados (para Flutter)
+        Copy-ItemMediaFiles $apiId $itemName $dataDir $mediaDir
         
         $categoryId = $null
         if ($data.category) {
@@ -2540,7 +2832,7 @@ function Generate-PokemonSpeciesCsv($dataDir) {
 
 function Generate-PokedexCsv($dataDir) {
     $rows = @()
-    $header = "id;api_id;name;is_main_series;region_id;color;descriptions_json;pokemon_entries_json"
+    $header = "id;api_id;name;is_main_series;region_id;color;descriptions_json;pokemon_entries_json;version_groups_json"
     $rows += $header
     
     $pokedexPath = Join-Path $dataDir "pokedex"
@@ -2550,6 +2842,7 @@ function Generate-PokedexCsv($dataDir) {
     
     $pokedexDirs = Get-ChildItem -Path $pokedexPath -Directory | Sort-Object { [int]($_.Name) }
     $pokedexIndex = 0
+    $nationalPokedexProcessed = $false
     
     foreach ($pokedexDir in $pokedexDirs) {
         $dataJson = Join-Path $pokedexDir.FullName "data.json"
@@ -2557,6 +2850,21 @@ function Generate-PokedexCsv($dataDir) {
         
         $data = Get-Content $dataJson -Raw | ConvertFrom-Json
         $apiId = $data.id
+        
+        # Si es la pokedex nacional (apiId 1), procesarla especialmente
+        if ($apiId -eq 1) {
+            $nationalPokedexProcessed = $true
+            $nationalPokedexDbId = Get-DbId "pokedex" $apiId
+            $nationalRegionDbId = Get-DbId "regions" 9999
+            $nationalColor = Get-PokedexColor 0
+            
+            # La pokedex nacional se asigna a la región nacional (apiId 9999)
+            $row = "$nationalPokedexDbId;$apiId;national;1;$nationalRegionDbId;$(Escape-CsvValue $nationalColor);$(Escape-CsvJson $data.descriptions);$(Escape-CsvJson $data.pokemon_entries);$(Escape-CsvJson $data.version_groups)"
+            $rows += $row
+            $pokedexIndex++
+            continue
+        }
+        
         $dbId = Get-DbId "pokedex" $apiId
         
         $regionId = $null
@@ -2572,23 +2880,25 @@ function Generate-PokedexCsv($dataDir) {
         
         $isMainSeries = if ($data.is_main_series) { 1 } else { 0 }
         
-        $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$isMainSeries;$(Escape-CsvValue $regionId);$(Escape-CsvValue $color);$(Escape-CsvJson $data.descriptions);$(Escape-CsvJson $data.pokemon_entries)"
+        $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$isMainSeries;$(Escape-CsvValue $regionId);$(Escape-CsvValue $color);$(Escape-CsvJson $data.descriptions);$(Escape-CsvJson $data.pokemon_entries);$(Escape-CsvJson $data.version_groups)"
         $rows += $row
         
         $pokedexIndex++
     }
     
-    # Añadir pokedex Nacional (especial)
-    $nationalPokedexApiId = 1
-    $nationalPokedexDbId = Get-DbId "pokedex" $nationalPokedexApiId
-    $nationalRegionDbId = Get-DbId "regions" 9999
-    $nationalColor = Get-PokedexColor 0
-    
-    $nationalPokedexPath = Join-Path $pokedexPath "1\data.json"
-    if (Test-Path $nationalPokedexPath) {
-        $nationalData = Get-Content $nationalPokedexPath -Raw | ConvertFrom-Json
-        $row = "$nationalPokedexDbId;$nationalPokedexApiId;national;1;$nationalRegionDbId;$(Escape-CsvValue $nationalColor);$(Escape-CsvJson $nationalData.descriptions);$(Escape-CsvJson $nationalData.pokemon_entries)"
-        $rows += $row
+    # Si no se procesó la pokedex nacional en el bucle, añadirla ahora
+    if (-not $nationalPokedexProcessed) {
+        $nationalPokedexApiId = 1
+        $nationalPokedexDbId = Get-DbId "pokedex" $nationalPokedexApiId
+        $nationalRegionDbId = Get-DbId "regions" 9999
+        $nationalColor = Get-PokedexColor 0
+        
+        $nationalPokedexPath = Join-Path $pokedexPath "1\data.json"
+        if (Test-Path $nationalPokedexPath) {
+            $nationalData = Get-Content $nationalPokedexPath -Raw | ConvertFrom-Json
+            $row = "$nationalPokedexDbId;$nationalPokedexApiId;national;1;$nationalRegionDbId;$(Escape-CsvValue $nationalColor);$(Escape-CsvJson $nationalData.descriptions);$(Escape-CsvJson $nationalData.pokemon_entries);$(Escape-CsvJson $nationalData.version_groups)"
+            $rows += $row
+        }
     }
     
     return $rows
@@ -2824,47 +3134,127 @@ function Generate-PokemonMovesCsv($dataDir) {
     return $rows
 }
 
-function Generate-PokedexEntriesCsv($dataDir) {
-    $rows = @()
-    $header = "pokedex_id;pokemon_species_id;entry_number"
-    $rows += $header
+# Función helper para extraer el nombre de región de un nombre de pokemon
+# Ejemplo: "slowpoke-galar" -> "galar", "meowth-alola" -> "alola"
+function Get-RegionNameFromPokemonName($pokemonName) {
+    $regionNames = @("alola", "galar", "paldea", "hisui", "kantonian", "johto", "hoenn", "sinnoh", "unova", "kalos")
     
-    $pokedexPath = Join-Path $dataDir "pokedex"
-    if (-not (Test-Path $pokedexPath)) {
-        return $rows
+    # Mapeo de nombres especiales
+    $regionMapping = @{
+        "kantonian" = "kanto"
     }
     
-    $pokedexDirs = Get-ChildItem -Path $pokedexPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($regionName in $regionNames) {
+        # Buscar al final con guión: "-galar", "-alola", etc.
+        if ($pokemonName -match "-$regionName$") {
+            $mappedName = if ($regionMapping.ContainsKey($regionName)) { $regionMapping[$regionName] } else { $regionName }
+            return $mappedName
+        }
+        # Buscar al principio: "kantonian-", etc.
+        if ($pokemonName -match "^$regionName-") {
+            $mappedName = if ($regionMapping.ContainsKey($regionName)) { $regionMapping[$regionName] } else { $regionName }
+            return $mappedName
+        }
+    }
     
-    foreach ($pokedexDir in $pokedexDirs) {
-        $dataJson = Join-Path $pokedexDir.FullName "data.json"
-        if (-not (Test-Path $dataJson)) { continue }
+    return $null
+}
+
+# Función helper para obtener la región de una pokedex desde su nombre
+# Ejemplo: "original-alola" -> "alola", "updated-galar" -> "galar", "isle-of-armor" -> "galar"
+function Get-RegionNameFromPokedexName($pokedexName) {
+    # Mapa de nombres de pokedex a regiones
+    $pokedexToRegion = @{
+        "alola" = "alola"
+        "galar" = "galar"
+        "paldea" = "paldea"
+        "hisui" = "hisui"
+        "kanto" = "kanto"
+        "johto" = "johto"
+        "hoenn" = "hoenn"
+        "sinnoh" = "sinnoh"
+        "unova" = "unova"
+        "kalos" = "kalos"
+        "isle-of-armor" = "galar"
+        "crown-tundra" = "galar"
+        "blueberry" = "paldea"
+    }
+    
+    # Buscar coincidencia exacta primero
+    if ($pokedexToRegion.ContainsKey($pokedexName)) {
+        return $pokedexToRegion[$pokedexName]
+    }
+    
+    # Buscar por patrón en el nombre
+    $regionNames = @("alola", "galar", "paldea", "hisui", "kanto", "johto", "hoenn", "sinnoh", "unova", "kalos")
+    
+    foreach ($regionName in $regionNames) {
+        if ($pokedexName -match $regionName) {
+            return $regionName
+        }
+    }
+    
+    return $null
+}
+
+function Generate-PokedexEntriesCsv($dataDir) {
+    $rows = @()
+    $header = "pokedex_id;pokemon_id;entry_number"
+    $rows += $header
+    
+    Write-Host "  [INFO] Generando PokedexEntries..." -ForegroundColor DarkGray
+    
+    # Crear mapa de pokedex: nombre -> (apiId, dbId, regionName)
+    $pokedexMap = @{}
+    $pokedexPath = Join-Path $dataDir "pokedex"
+    if (Test-Path $pokedexPath) {
+        $pokedexDirs = Get-ChildItem -Path $pokedexPath -Directory | Sort-Object { [int]($_.Name) }
         
-        $data = Get-Content $dataJson -Raw | ConvertFrom-Json
-        $pokedexApiId = $data.id
-        $pokedexDbId = Get-DbId "pokedex" $pokedexApiId
-        
-        if ($data.pokemon_entries) {
-            foreach ($entry in $data.pokemon_entries) {
-                $speciesInfo = $entry.pokemon_species
-                $entryNumber = $entry.entry_number
-                
-                if ($speciesInfo -and $entryNumber) {
-                    $speciesApiId = Get-ApiIdFromUrl $speciesInfo.url
-                    $speciesDbId = Get-DbId "pokemonSpecies" $speciesApiId
+        foreach ($pokedexDir in $pokedexDirs) {
+            $dataJson = Join-Path $pokedexDir.FullName "data.json"
+            if (-not (Test-Path $dataJson)) { continue }
+            
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $pokedexApiId = $data.id
+            $pokedexDbId = Get-DbId "pokedex" $pokedexApiId
+            $pokedexName = $data.name
+            $regionName = Get-RegionNameFromPokedexName $pokedexName
+            
+            $pokedexMap[$pokedexName] = @{
+                ApiId = $pokedexApiId
+                DbId = $pokedexDbId
+                RegionName = $regionName
+                Entries = @{} # entry_number -> speciesApiId
+            }
+            
+            # Cargar entradas originales para obtener entry_number
+            if ($data.pokemon_entries) {
+                foreach ($entry in $data.pokemon_entries) {
+                    $speciesInfo = $entry.pokemon_species
+                    $entryNumber = $entry.entry_number
                     
-                    $row = "$pokedexDbId;$speciesDbId;$entryNumber"
-                    $rows += $row
+                    if ($speciesInfo -and $entryNumber) {
+                        $speciesApiId = Get-ApiIdFromUrl $speciesInfo.url
+                        $pokedexMap[$pokedexName].Entries[$entryNumber] = $speciesApiId
+                    }
                 }
             }
         }
     }
     
-    # Añadir entradas de pokedex nacional
-    $nationalPokedexDbId = Get-DbId "pokedex" 1
+    # Añadir pokedex nacional al mapa
+    $nationalPokedexApiId = 1
+    $nationalPokedexDbId = Get-DbId "pokedex" $nationalPokedexApiId
     $nationalPokedexPath = Join-Path $pokedexPath "1\data.json"
     if (Test-Path $nationalPokedexPath) {
         $nationalData = Get-Content $nationalPokedexPath -Raw | ConvertFrom-Json
+        $pokedexMap["national"] = @{
+            ApiId = $nationalPokedexApiId
+            DbId = $nationalPokedexDbId
+            RegionName = $null
+            Entries = @{}
+        }
+        
         if ($nationalData.pokemon_entries) {
             foreach ($entry in $nationalData.pokemon_entries) {
                 $speciesInfo = $entry.pokemon_species
@@ -2872,13 +3262,159 @@ function Generate-PokedexEntriesCsv($dataDir) {
                 
                 if ($speciesInfo -and $entryNumber) {
                     $speciesApiId = Get-ApiIdFromUrl $speciesInfo.url
-                    $speciesDbId = Get-DbId "pokemonSpecies" $speciesApiId
-                    
-                    $row = "$nationalPokedexDbId;$speciesDbId;$entryNumber"
-                    $rows += $row
+                    $pokedexMap["national"].Entries[$entryNumber] = $speciesApiId
                 }
             }
         }
+    }
+    
+    # Procesar pokemon-species para asignar pokemons a pokedexes según las reglas
+    $psPath = Join-Path $dataDir "pokemon-species"
+    if (-not (Test-Path $psPath)) {
+        Write-Warning "  [AVISO] Carpeta pokemon-species no existe: $psPath"
+        return $rows
+    }
+    
+    $psDirs = Get-ChildItem -Path $psPath -Directory | Sort-Object { [int]($_.Name) }
+    $totalSpecies = $psDirs.Count
+    $processedSpecies = 0
+    $speciesWithEntries = 0
+    $totalEntriesGenerated = 0
+    
+    Write-Host "  [INFO] Procesando $totalSpecies especies de pokemon..." -ForegroundColor DarkGray
+    
+    foreach ($psDir in $psDirs) {
+        $processedSpecies++
+        $dataJson = Join-Path $psDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+        
+        if (-not $data.pokedex_numbers -or -not $data.varieties) {
+            if ($processedSpecies % 100 -eq 0) {
+                Write-Host "    Procesando especie $processedSpecies/$totalSpecies..." -ForegroundColor DarkGray
+            }
+            continue
+        }
+        
+        $entriesForThisSpecies = 0
+        
+        # Obtener pokemon default y variantes con región
+        $defaultPokemon = $null
+        $defaultPokemonApiId = $null
+        $regionVariants = @{} # regionName -> pokemonApiId
+        $otherVariants = @() # pokemonApiId[]
+        
+        foreach ($variety in $data.varieties) {
+            $isDefault = if ($variety.is_default) { $true } else { $false }
+            $pokemonInfo = $variety.pokemon
+            
+            if (-not $pokemonInfo) { continue }
+            
+            $pokemonApiId = Get-ApiIdFromUrl $pokemonInfo.url
+            $pokemonName = $pokemonInfo.name
+            
+            # Verificar que el pokemon existe en el mapa de IDs (debe haberse generado en Generate-PokemonCsv)
+            if (-not $script:idMaps["pokemon"].ContainsKey($pokemonApiId)) {
+                Write-Warning "  [AVISO] Pokemon API ID $pokemonApiId (nombre: $pokemonName) no encontrado en idMaps - puede que no se haya generado en Generate-PokemonCsv"
+                continue
+            }
+            
+            $pokemonDbId = Get-DbId "pokemon" $pokemonApiId
+            
+            if ($isDefault) {
+                $defaultPokemon = $pokemonDbId
+                $defaultPokemonApiId = $pokemonApiId
+            } else {
+                $regionName = Get-RegionNameFromPokemonName $pokemonName
+                if ($regionName) {
+                    $regionVariants[$regionName] = $pokemonApiId
+                } else {
+                    $otherVariants += $pokemonApiId
+                }
+            }
+        }
+        
+        # Si no hay pokemon default, saltar esta especie
+        if (-not $defaultPokemon) {
+            Write-Warning "  [AVISO] Especie $($data.id) (nombre: $($data.name)) no tiene pokemon default - saltando"
+            continue
+        }
+        
+        # Procesar pokedex_numbers para asignar pokemons
+        foreach ($pokedexNumber in $data.pokedex_numbers) {
+            $pokedexInfo = $pokedexNumber.pokedex
+            $entryNumber = $pokedexNumber.entry_number
+            
+            if (-not $pokedexInfo -or -not $entryNumber) { continue }
+            
+            $pokedexName = $pokedexInfo.name
+            if (-not $pokedexMap.ContainsKey($pokedexName)) { continue }
+            
+            $pokedexDbId = $pokedexMap[$pokedexName].DbId
+            $pokedexRegionName = $pokedexMap[$pokedexName].RegionName
+            
+            # Determinar qué pokemon asignar a esta pokedex según las reglas:
+            # 1. Si la pokedex es de una región Y hay variante para esa región: usar variante (NO default)
+            # 2. Si la pokedex es de una región pero NO hay variante para esa región: usar default
+            # 3. Si la pokedex NO es de ninguna región específica: usar default
+            # IMPORTANTE: Si hay variante para una región, el default NO debe ir a pokedexes de esa región
+            $pokemonToAssign = $null
+            
+            if ($pokedexRegionName -and $regionVariants.ContainsKey($pokedexRegionName)) {
+                # Hay una variante específica para esta región: usar la variante, NO el default
+                $variantApiId = $regionVariants[$pokedexRegionName]
+                
+                # Verificar que la variante existe en el mapa de IDs
+                if (-not $script:idMaps["pokemon"].ContainsKey($variantApiId)) {
+                    Write-Warning "  [AVISO] Variante regional $variantApiId no encontrada en idMaps - usando default en su lugar"
+                    $pokemonToAssign = $defaultPokemon
+                } else {
+                $pokemonToAssign = Get-DbId "pokemon" $variantApiId
+                }
+            } else {
+                # Verificar si esta pokedex es de una región que tiene variante
+                # Si es así, NO asignar el default (solo se asignará la variante)
+                $shouldUseDefault = $true
+                
+                if ($pokedexRegionName) {
+                    # Si la pokedex es de una región que tiene variante, NO usar default
+                    if ($regionVariants.ContainsKey($pokedexRegionName)) {
+                        $shouldUseDefault = $false
+                    }
+                }
+                
+                if ($shouldUseDefault) {
+                    $pokemonToAssign = $defaultPokemon
+                }
+            }
+            
+            if ($pokemonToAssign) {
+                $row = "$pokedexDbId;$pokemonToAssign;$entryNumber"
+                $rows += $row
+                $entriesForThisSpecies++
+                $totalEntriesGenerated++
+            } else {
+                Write-Warning "  [AVISO] No se asignó pokemon para especie $($data.id) (nombre: $($data.name)) en pokedex $pokedexName (entry_number: $entryNumber)"
+            }
+        }
+        
+        if ($entriesForThisSpecies -gt 0) {
+            $speciesWithEntries++
+        }
+        
+        if ($processedSpecies % 100 -eq 0) {
+            Write-Host "    Procesadas $processedSpecies/$totalSpecies especies, $speciesWithEntries con entradas, $totalEntriesGenerated entradas generadas..." -ForegroundColor DarkGray
+        }
+    }
+    
+    $rowCount = $rows.Count - 1  # Restar header
+    Write-Host "  [INFO] PokedexEntries generado: $rowCount relaciones" -ForegroundColor DarkGray
+    Write-Host "  [INFO] Resumen: $processedSpecies especies procesadas, $speciesWithEntries con entradas, $totalEntriesGenerated entradas generadas" -ForegroundColor DarkGray
+    
+    if ($rowCount -eq 0) {
+        Write-Warning "  [ERROR CRÍTICO] PokedexEntries está vacío - NO HAY RELACIONES GENERADAS"
+        Write-Warning "  [ERROR CRÍTICO] Esto causará que no se muestren pokemons en las regiones"
     }
     
     return $rows
@@ -2904,10 +3440,10 @@ function Generate-PokemonVariantsCsv($dataDir) {
         
         if ($data.varieties) {
             $defaultPokemon = $null
-            $variants = @()
+            $allPokemons = @() # Todos los pokemons de esta especie (default + variantes)
             
             foreach ($variety in $data.varieties) {
-                $isDefault = if ($variety.is_default) { 1 } else { 0 }
+                $isDefault = if ($variety.is_default) { $true } else { $false }
                 $pokemonInfo = $variety.pokemon
                 
                 if ($pokemonInfo) {
@@ -2916,15 +3452,27 @@ function Generate-PokemonVariantsCsv($dataDir) {
                     
                     if ($isDefault) {
                         $defaultPokemon = $pokemonDbId
-                    } else {
-                        $variants += $pokemonDbId
                     }
+                    
+                    $allPokemons += $pokemonDbId
                 }
             }
             
-            if ($defaultPokemon -and $variants.Count -gt 0) {
-                foreach ($variantDbId in $variants) {
-                    $row = "$defaultPokemon;$variantDbId"
+            # Si hay pokemon default y hay otros pokemons, crear relaciones bidireccionales
+            # El pokemon default es el "base", todas las variantes se relacionan con él
+            if ($defaultPokemon -and $allPokemons.Count -gt 1) {
+                foreach ($pokemonDbId in $allPokemons) {
+                    if ($pokemonDbId -ne $defaultPokemon) {
+                        # Relación: default -> variante
+                        $row = "$defaultPokemon;$pokemonDbId"
+                        $rows += $row
+                    }
+                }
+            } elseif ($allPokemons.Count -gt 1) {
+                # Si no hay default pero hay múltiples pokemons, relacionar todos con el primero
+                $basePokemon = $allPokemons[0]
+                for ($i = 1; $i -lt $allPokemons.Count; $i++) {
+                    $row = "$basePokemon;$($allPokemons[$i])"
                     $rows += $row
                 }
             }
@@ -3092,6 +3640,901 @@ function Generate-LocalizedNamesCsv($dataDir) {
     return $rows
 }
 
+# Funciones Generate-*Csv para nuevas tablas
+function Generate-BerriesCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;growth_time;max_harvest;natural_gift_power;size;smoothness;soil_dryness;firmness_id;item_id;natural_gift_type_id;data_json"
+    $rows += $header
+    
+    $berriesPath = Join-Path $dataDir "berry"
+    if (-not (Test-Path $berriesPath)) { return $rows }
+    
+    $berryDirs = Get-ChildItem -Path $berriesPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($berryDir in $berryDirs) {
+        $dataJson = Join-Path $berryDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "berries" $apiId
+            
+            $firmnessId = $null
+            if ($data.firmness) {
+                $firmnessApiId = Get-ApiIdFromUrl $data.firmness.url
+                $firmnessId = Get-DbId "berryFirmness" $firmnessApiId
+            }
+            
+            $itemId = $null
+            if ($data.item) {
+                $itemApiId = Get-ApiIdFromUrl $data.item.url
+                $itemId = Get-DbId "items" $itemApiId
+            }
+            
+            $naturalGiftTypeId = $null
+            if ($data.natural_gift_type) {
+                $typeApiId = Get-ApiIdFromUrl $data.natural_gift_type.url
+                $naturalGiftTypeId = Get-DbId "types" $typeApiId
+            }
+            
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$(Escape-CsvValue $data.growth_time);$(Escape-CsvValue $data.max_harvest);$(Escape-CsvValue $data.natural_gift_power);$(Escape-CsvValue $data.size);$(Escape-CsvValue $data.smoothness);$(Escape-CsvValue $data.soil_dryness);$firmnessId;$itemId;$naturalGiftTypeId;$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando berry $($berryDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-BerryFirmnessCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $firmnessPath = Join-Path $dataDir "berry-firmness"
+    if (-not (Test-Path $firmnessPath)) { return $rows }
+    
+    $firmnessDirs = Get-ChildItem -Path $firmnessPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($firmnessDir in $firmnessDirs) {
+        $dataJson = Join-Path $firmnessDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "berryFirmness" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando berry-firmness $($firmnessDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-BerryFlavorCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;contest_type_id;data_json"
+    $rows += $header
+    
+    $flavorPath = Join-Path $dataDir "berry-flavor"
+    if (-not (Test-Path $flavorPath)) { return $rows }
+    
+    $flavorDirs = Get-ChildItem -Path $flavorPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($flavorDir in $flavorDirs) {
+        $dataJson = Join-Path $flavorDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "berryFlavor" $apiId
+            
+            $contestTypeId = $null
+            if ($data.contest_type) {
+                $contestTypeApiId = Get-ApiIdFromUrl $data.contest_type.url
+                $contestTypeId = Get-DbId "contestTypes" $contestTypeApiId
+            }
+            
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$contestTypeId;$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando berry-flavor $($flavorDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-CharacteristicsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;gene_modulo;highest_stat_id;possible_values_json;data_json"
+    $rows += $header
+    
+    $charPath = Join-Path $dataDir "characteristic"
+    if (-not (Test-Path $charPath)) { return $rows }
+    
+    $charDirs = Get-ChildItem -Path $charPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($charDir in $charDirs) {
+        $dataJson = Join-Path $charDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "characteristics" $apiId
+            
+            $highestStatId = $null
+            if ($data.highest_stat) {
+                $statApiId = Get-ApiIdFromUrl $data.highest_stat.url
+                $highestStatId = Get-DbId "stats" $statApiId
+            }
+            
+            $possibleValuesJson = Escape-CsvJson ($data.possible_values | ConvertTo-Json -Compress)
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.gene_modulo);$highestStatId;$possibleValuesJson;$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando characteristic $($charDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-ContestEffectsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;appeal;jam;data_json"
+    $rows += $header
+    
+    $effectsPath = Join-Path $dataDir "contest-effect"
+    if (-not (Test-Path $effectsPath)) { return $rows }
+    
+    $effectDirs = Get-ChildItem -Path $effectsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($effectDir in $effectDirs) {
+        $dataJson = Join-Path $effectDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "contestEffects" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.appeal);$(Escape-CsvValue $data.jam);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando contest-effect $($effectDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-ContestTypesCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;berry_flavor_id;data_json"
+    $rows += $header
+    
+    $typesPath = Join-Path $dataDir "contest-type"
+    if (-not (Test-Path $typesPath)) { return $rows }
+    
+    $typeDirs = Get-ChildItem -Path $typesPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($typeDir in $typeDirs) {
+        $dataJson = Join-Path $typeDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "contestTypes" $apiId
+            
+            $berryFlavorId = $null
+            if ($data.berry_flavor) {
+                $flavorApiId = Get-ApiIdFromUrl $data.berry_flavor.url
+                $berryFlavorId = Get-DbId "berryFlavor" $flavorApiId
+            }
+            
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$berryFlavorId;$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando contest-type $($typeDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-EncounterConditionsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $conditionsPath = Join-Path $dataDir "encounter-condition"
+    if (-not (Test-Path $conditionsPath)) { return $rows }
+    
+    $conditionDirs = Get-ChildItem -Path $conditionsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($conditionDir in $conditionDirs) {
+        $dataJson = Join-Path $conditionDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "encounterConditions" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando encounter-condition $($conditionDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-EncounterConditionValuesCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;condition_id;data_json"
+    $rows += $header
+    
+    $valuesPath = Join-Path $dataDir "encounter-condition-value"
+    if (-not (Test-Path $valuesPath)) { return $rows }
+    
+    $valueDirs = Get-ChildItem -Path $valuesPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($valueDir in $valueDirs) {
+        $dataJson = Join-Path $valueDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "encounterConditionValues" $apiId
+            
+            $conditionId = $null
+            if ($data.condition) {
+                $conditionApiId = Get-ApiIdFromUrl $data.condition.url
+                $conditionId = Get-DbId "encounterConditions" $conditionApiId
+            }
+            
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$conditionId;$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando encounter-condition-value $($valueDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-EncounterMethodsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;order;data_json"
+    $rows += $header
+    
+    $methodsPath = Join-Path $dataDir "encounter-method"
+    if (-not (Test-Path $methodsPath)) { return $rows }
+    
+    $methodDirs = Get-ChildItem -Path $methodsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($methodDir in $methodDirs) {
+        $dataJson = Join-Path $methodDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "encounterMethods" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$(Escape-CsvValue $data.order);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando encounter-method $($methodDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-GendersCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $gendersPath = Join-Path $dataDir "gender"
+    if (-not (Test-Path $gendersPath)) { return $rows }
+    
+    $genderDirs = Get-ChildItem -Path $gendersPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($genderDir in $genderDirs) {
+        $dataJson = Join-Path $genderDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "genders" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando gender $($genderDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-ItemAttributesCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $attributesPath = Join-Path $dataDir "item-attribute"
+    if (-not (Test-Path $attributesPath)) { return $rows }
+    
+    $attributeDirs = Get-ChildItem -Path $attributesPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($attributeDir in $attributeDirs) {
+        $dataJson = Join-Path $attributeDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "itemAttributes" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando item-attribute $($attributeDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-ItemFlingEffectsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $effectsPath = Join-Path $dataDir "item-fling-effect"
+    if (-not (Test-Path $effectsPath)) { return $rows }
+    
+    $effectDirs = Get-ChildItem -Path $effectsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($effectDir in $effectDirs) {
+        $dataJson = Join-Path $effectDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "itemFlingEffects" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando item-fling-effect $($effectDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-LocationsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;region_id;data_json"
+    $rows += $header
+    
+    $locationsPath = Join-Path $dataDir "location"
+    if (-not (Test-Path $locationsPath)) { return $rows }
+    
+    $locationDirs = Get-ChildItem -Path $locationsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($locationDir in $locationDirs) {
+        $dataJson = Join-Path $locationDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "locations" $apiId
+            
+            $regionId = $null
+            if ($data.region) {
+                $regionApiId = Get-ApiIdFromUrl $data.region.url
+                $regionId = Get-DbId "regions" $regionApiId
+            }
+            
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$regionId;$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando location $($locationDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-LocationAreasCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;location_id;game_index;data_json"
+    $rows += $header
+    
+    $areasPath = Join-Path $dataDir "location-area"
+    if (-not (Test-Path $areasPath)) { return $rows }
+    
+    $areaDirs = Get-ChildItem -Path $areasPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($areaDir in $areaDirs) {
+        $dataJson = Join-Path $areaDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "locationAreas" $apiId
+            
+            $locationId = $null
+            if ($data.location) {
+                $locationApiId = Get-ApiIdFromUrl $data.location.url
+                $locationId = Get-DbId "locations" $locationApiId
+            }
+            
+            $gameIndex = $null
+            if ($data.game_indices -and $data.game_indices.Count -gt 0) {
+                $gameIndex = $data.game_indices[0].game_index
+            }
+            
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$locationId;$gameIndex;$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando location-area $($areaDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-MachinesCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;item_id;move_id;version_group_id;data_json"
+    $rows += $header
+    
+    $machinesPath = Join-Path $dataDir "machine"
+    if (-not (Test-Path $machinesPath)) { return $rows }
+    
+    $machineDirs = Get-ChildItem -Path $machinesPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($machineDir in $machineDirs) {
+        $dataJson = Join-Path $machineDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "machines" $apiId
+            
+            $itemId = $null
+            if ($data.item) {
+                $itemApiId = Get-ApiIdFromUrl $data.item.url
+                $itemId = Get-DbId "items" $itemApiId
+            }
+            
+            $moveId = $null
+            if ($data.move) {
+                $moveApiId = Get-ApiIdFromUrl $data.move.url
+                $moveId = Get-DbId "moves" $moveApiId
+            }
+            
+            $versionGroupId = $null
+            if ($data.version_group) {
+                $vgApiId = Get-ApiIdFromUrl $data.version_group.url
+                $versionGroupId = Get-DbId "versionGroups" $vgApiId
+            }
+            
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$itemId;$moveId;$versionGroupId;$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando machine $($machineDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-MoveAilmentsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $ailmentsPath = Join-Path $dataDir "move-ailment"
+    if (-not (Test-Path $ailmentsPath)) { return $rows }
+    
+    $ailmentDirs = Get-ChildItem -Path $ailmentsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($ailmentDir in $ailmentDirs) {
+        $dataJson = Join-Path $ailmentDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "moveAilments" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando move-ailment $($ailmentDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-MoveBattleStylesCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $stylesPath = Join-Path $dataDir "move-battle-style"
+    if (-not (Test-Path $stylesPath)) { return $rows }
+    
+    $styleDirs = Get-ChildItem -Path $stylesPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($styleDir in $styleDirs) {
+        $dataJson = Join-Path $styleDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "moveBattleStyles" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando move-battle-style $($styleDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-MoveCategoriesCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $categoriesPath = Join-Path $dataDir "move-category"
+    if (-not (Test-Path $categoriesPath)) { return $rows }
+    
+    $categoryDirs = Get-ChildItem -Path $categoriesPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($categoryDir in $categoryDirs) {
+        $dataJson = Join-Path $categoryDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "moveCategories" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando move-category $($categoryDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-MoveLearnMethodsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $methodsPath = Join-Path $dataDir "move-learn-method"
+    if (-not (Test-Path $methodsPath)) { return $rows }
+    
+    $methodDirs = Get-ChildItem -Path $methodsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($methodDir in $methodDirs) {
+        $dataJson = Join-Path $methodDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "moveLearnMethods" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando move-learn-method $($methodDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-MoveTargetsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $targetsPath = Join-Path $dataDir "move-target"
+    if (-not (Test-Path $targetsPath)) { return $rows }
+    
+    $targetDirs = Get-ChildItem -Path $targetsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($targetDir in $targetDirs) {
+        $dataJson = Join-Path $targetDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "moveTargets" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando move-target $($targetDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-PalParkAreasCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $areasPath = Join-Path $dataDir "pal-park-area"
+    if (-not (Test-Path $areasPath)) { return $rows }
+    
+    $areaDirs = Get-ChildItem -Path $areasPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($areaDir in $areaDirs) {
+        $dataJson = Join-Path $areaDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "palParkAreas" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando pal-park-area $($areaDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-PokeathlonStatsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;data_json"
+    $rows += $header
+    
+    $statsPath = Join-Path $dataDir "pokeathlon-stat"
+    if (-not (Test-Path $statsPath)) { return $rows }
+    
+    $statDirs = Get-ChildItem -Path $statsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($statDir in $statDirs) {
+        $dataJson = Join-Path $statDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "pokeathlonStats" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando pokeathlon-stat $($statDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-PokemonFormsCsv($dataDir, $mediaDir) {
+    $rows = @()
+    $header = "id;api_id;name;pokemon_id;version_group_id;order;form_order;is_default;is_battle_only;is_mega;form_name;sprites_json;types_json;data_json;sprite_front_default_path;sprite_front_shiny_path;sprite_back_default_path;sprite_back_shiny_path"
+    $rows += $header
+    
+    $formsPath = Join-Path $dataDir "pokemon-form"
+    if (-not (Test-Path $formsPath)) { return $rows }
+    
+    $formDirs = Get-ChildItem -Path $formsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($formDir in $formDirs) {
+        $dataJson = Join-Path $formDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "pokemonForms" $apiId
+            
+            $pokemonId = $null
+            if ($data.pokemon) {
+                $pokemonApiId = Get-ApiIdFromUrl $data.pokemon.url
+                $pokemonId = Get-DbId "pokemon" $pokemonApiId
+            }
+            
+            $versionGroupId = $null
+            if ($data.version_group) {
+                $vgApiId = Get-ApiIdFromUrl $data.version_group.url
+                $versionGroupId = Get-DbId "versionGroups" $vgApiId
+            }
+            
+            $spritesJson = Escape-CsvJson ($data.sprites | ConvertTo-Json -Depth 100 -Compress)
+            $typesJson = Escape-CsvJson ($data.types | ConvertTo-Json -Depth 100 -Compress)
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            # Copiar archivos multimedia de pokemon-form
+            $formSourceDir = Join-Path $formsPath $apiId
+            $pokemonFormMediaDir = Join-Path $mediaDir "pokemon-form"
+            if (-not (Test-Path $pokemonFormMediaDir)) {
+                New-Item -ItemType Directory -Force -Path $pokemonFormMediaDir | Out-Null
+            }
+            
+            $spriteFrontDefaultPath = $null
+            $spriteFrontShinyPath = $null
+            $spriteBackDefaultPath = $null
+            $spriteBackShinyPath = $null
+            
+            if (Test-Path $formSourceDir) {
+                $formMediaFiles = Get-ChildItem -Path $formSourceDir -File -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Extension -match '\.(svg|png|jpg|jpeg)$'
+                }
+                foreach ($formFile in $formMediaFiles) {
+                    $flattenedName = "media_pokemon-form_$apiId" + "_" + $formFile.Name
+                    $targetPath = Join-Path $pokemonFormMediaDir $flattenedName
+                    if (-not (Test-Path $targetPath)) {
+                        Copy-Item -Path $formFile.FullName -Destination $targetPath -Force -ErrorAction SilentlyContinue
+                    }
+                    
+                    # Mapear rutas según el tipo de sprite
+                    if ($formFile.Name -match "front.*default" -and $formFile.Name -notmatch "shiny") {
+                        $spriteFrontDefaultPath = "assets/$flattenedName"
+                    } elseif ($formFile.Name -match "front.*shiny") {
+                        $spriteFrontShinyPath = "assets/$flattenedName"
+                    } elseif ($formFile.Name -match "back.*default" -and $formFile.Name -notmatch "shiny") {
+                        $spriteBackDefaultPath = "assets/$flattenedName"
+                    } elseif ($formFile.Name -match "back.*shiny") {
+                        $spriteBackShinyPath = "assets/$flattenedName"
+                    }
+                }
+            }
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$pokemonId;$versionGroupId;$(Escape-CsvValue $data.order);$(Escape-CsvValue $data.form_order);$(if ($data.is_default) { '1' } else { '0' });$(if ($data.is_battle_only) { '1' } else { '0' });$(if ($data.is_mega) { '1' } else { '0' });$(Escape-CsvValue $data.form_name);$spritesJson;$typesJson;$dataJsonStr;$(Escape-CsvValue $spriteFrontDefaultPath);$(Escape-CsvValue $spriteFrontShinyPath);$(Escape-CsvValue $spriteBackDefaultPath);$(Escape-CsvValue $spriteBackShinyPath)"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando pokemon-form $($formDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-SuperContestEffectsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;appeal;data_json"
+    $rows += $header
+    
+    $effectsPath = Join-Path $dataDir "super-contest-effect"
+    if (-not (Test-Path $effectsPath)) { return $rows }
+    
+    $effectDirs = Get-ChildItem -Path $effectsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($effectDir in $effectDirs) {
+        $dataJson = Join-Path $effectDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "superContestEffects" $apiId
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.appeal);$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando super-contest-effect $($effectDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
+function Generate-VersionsCsv($dataDir) {
+    $rows = @()
+    $header = "id;api_id;name;version_group_id;data_json"
+    $rows += $header
+    
+    $versionsPath = Join-Path $dataDir "version"
+    if (-not (Test-Path $versionsPath)) { return $rows }
+    
+    $versionDirs = Get-ChildItem -Path $versionsPath -Directory | Sort-Object { [int]($_.Name) }
+    foreach ($versionDir in $versionDirs) {
+        $dataJson = Join-Path $versionDir.FullName "data.json"
+        if (-not (Test-Path $dataJson)) { continue }
+        
+        try {
+            $data = Get-Content $dataJson -Raw | ConvertFrom-Json
+            $apiId = $data.id
+            $dbId = Get-DbId "versions" $apiId
+            
+            $versionGroupId = $null
+            if ($data.version_group) {
+                $vgApiId = Get-ApiIdFromUrl $data.version_group.url
+                $versionGroupId = Get-DbId "versionGroups" $vgApiId
+            }
+            
+            $dataJsonStr = Escape-CsvJson ($data | ConvertTo-Json -Depth 100 -Compress)
+            
+            $row = "$dbId;$apiId;$(Escape-CsvValue $data.name);$versionGroupId;$dataJsonStr"
+            $rows += $row
+            $data = $null
+        } catch {
+            Write-Warning "  [AVISO] Error procesando version $($versionDir.Name): $_"
+        }
+    }
+    
+    return $rows
+}
+
 # Función para cargar URLs pendientes desde urls.txt existentes
 function Load-PendingUrlsFromFiles {
     if (-not (Test-Path $BaseDir)) {
@@ -3173,6 +4616,31 @@ $script:idMaps = @{
     itemCategories = @{}
     itemPockets = @{}
     evolutionChains = @{}
+    berries = @{}
+    berryFirmness = @{}
+    berryFlavor = @{}
+    characteristics = @{}
+    contestEffects = @{}
+    contestTypes = @{}
+    encounterConditions = @{}
+    encounterConditionValues = @{}
+    encounterMethods = @{}
+    genders = @{}
+    itemAttributes = @{}
+    itemFlingEffects = @{}
+    locations = @{}
+    locationAreas = @{}
+    machines = @{}
+    moveAilments = @{}
+    moveBattleStyles = @{}
+    moveCategories = @{}
+    moveLearnMethods = @{}
+    moveTargets = @{}
+    palParkAreas = @{}
+    pokeathlonStats = @{}
+    pokemonForms = @{}
+    superContestEffects = @{}
+    versions = @{}
 }
 
 # Contadores de IDs autoincrementales
@@ -3199,6 +4667,31 @@ $script:idCounters = @{
     itemCategories = 1
     itemPockets = 1
     evolutionChains = 1
+    berries = 1
+    berryFirmness = 1
+    berryFlavor = 1
+    characteristics = 1
+    contestEffects = 1
+    contestTypes = 1
+    encounterConditions = 1
+    encounterConditionValues = 1
+    encounterMethods = 1
+    genders = 1
+    itemAttributes = 1
+    itemFlingEffects = 1
+    locations = 1
+    locationAreas = 1
+    machines = 1
+    moveAilments = 1
+    moveBattleStyles = 1
+    moveCategories = 1
+    moveLearnMethods = 1
+    moveTargets = 1
+    palParkAreas = 1
+    pokeathlonStats = 1
+    pokemonForms = 1
+    superContestEffects = 1
+    versions = 1
 }
 
 # Función para obtener ID de base de datos desde API ID
@@ -3326,6 +4819,7 @@ function Get-RegionFromPokemonName($pokemonName, $allRegions) {
 
 # Función para crear archivos artwork_official.* como copias de sprite_front_default.*
 # Esta función se ejecuta antes de la FASE 3 para asegurar que los archivos existan
+# IMPORTANTE: Los archivos se descargan con formato pokemon_{id}_default_{filename}.{ext}
 function Create-ArtworkOfficialFiles {
     Write-Host "[INFO] Verificando y creando archivos artwork_official.*..." -ForegroundColor DarkCyan
     $pokemonPath = Join-Path $BaseDir "pokemon"
@@ -3347,11 +4841,13 @@ function Create-ArtworkOfficialFiles {
         }
         
         try {
-            # Verificar y crear artwork_official.svg o .png
-            $spriteSvg = Join-Path $pokemonDir.FullName "sprite_front_default.svg"
-            $spritePng = Join-Path $pokemonDir.FullName "sprite_front_default.png"
-            $artworkSvg = Join-Path $pokemonDir.FullName "artwork_official.svg"
-            $artworkPng = Join-Path $pokemonDir.FullName "artwork_official.png"
+            $pokemonApiId = $pokemonDir.Name
+            
+            # Buscar archivos con formato: pokemon_{id}_default_sprite_front_default.{ext}
+            $spriteSvg = Join-Path $pokemonDir.FullName "pokemon_$pokemonApiId" + "_default_sprite_front_default.svg"
+            $spritePng = Join-Path $pokemonDir.FullName "pokemon_$pokemonApiId" + "_default_sprite_front_default.png"
+            $artworkSvg = Join-Path $pokemonDir.FullName "pokemon_$pokemonApiId" + "_default_artwork_official.svg"
+            $artworkPng = Join-Path $pokemonDir.FullName "pokemon_$pokemonApiId" + "_default_artwork_official.png"
             
             # Crear artwork_official.svg desde sprite_front_default.svg
             if ((Test-Path $spriteSvg) -and (-not (Test-Path $artworkSvg))) {
@@ -3374,10 +4870,10 @@ function Create-ArtworkOfficialFiles {
             }
             
             # Verificar y crear artwork_official_shiny.svg o .png
-            $spriteShinySvg = Join-Path $pokemonDir.FullName "sprite_front_shiny.svg"
-            $spriteShinyPng = Join-Path $pokemonDir.FullName "sprite_front_shiny.png"
-            $artworkShinySvg = Join-Path $pokemonDir.FullName "artwork_official_shiny.svg"
-            $artworkShinyPng = Join-Path $pokemonDir.FullName "artwork_official_shiny.png"
+            $spriteShinySvg = Join-Path $pokemonDir.FullName "pokemon_$pokemonApiId" + "_default_sprite_front_shiny.svg"
+            $spriteShinyPng = Join-Path $pokemonDir.FullName "pokemon_$pokemonApiId" + "_default_sprite_front_shiny.png"
+            $artworkShinySvg = Join-Path $pokemonDir.FullName "pokemon_$pokemonApiId" + "_default_artwork_official_shiny.svg"
+            $artworkShinyPng = Join-Path $pokemonDir.FullName "pokemon_$pokemonApiId" + "_default_artwork_official_shiny.png"
             
             # Crear artwork_official_shiny.svg desde sprite_front_shiny.svg
             if ((Test-Path $spriteShinySvg) -and (-not (Test-Path $artworkShinySvg))) {
@@ -3524,7 +5020,7 @@ function Process-DataForBackup {
         @{Name="Languages"; File="01_languages.csv"; Func={Generate-LanguagesCsv $BaseDir}},
         @{Name="Generations"; File="02_generations.csv"; Func={Generate-GenerationsCsv $BaseDir}},
         @{Name="Regions"; File="03_regions.csv"; Func={Generate-RegionsCsv $BaseDir}},
-        @{Name="Types"; File="04_types.csv"; Func={Generate-TypesCsv $BaseDir}},
+        @{Name="Types"; File="04_types.csv"; Func={Generate-TypesCsv $BaseDir $tempMediaDir}},
         @{Name="TypeDamageRelations"; File="05_type_damage_relations.csv"; Func={Generate-TypeDamageRelationsCsv $BaseDir}},
         @{Name="Stats"; File="06_stats.csv"; Func={Generate-StatsCsv $BaseDir}},
         @{Name="VersionGroups"; File="07_version_groups.csv"; Func={Generate-VersionGroupsCsv $BaseDir}},
@@ -3549,15 +5045,57 @@ function Process-DataForBackup {
         @{Name="PokemonMoves"; File="26_pokemon_moves.csv"; Func={Generate-PokemonMovesCsv $BaseDir}},
         @{Name="PokedexEntries"; File="27_pokedex_entries.csv"; Func={Generate-PokedexEntriesCsv $BaseDir}},
         @{Name="PokemonVariants"; File="28_pokemon_variants.csv"; Func={Generate-PokemonVariantsCsv $BaseDir}},
-        @{Name="LocalizedNames"; File="29_localized_names.csv"; Func={Generate-LocalizedNamesCsv $BaseDir}}
+        @{Name="LocalizedNames"; File="29_localized_names.csv"; Func={Generate-LocalizedNamesCsv $BaseDir}},
+        @{Name="Berries"; File="30_berries.csv"; Func={Generate-BerriesCsv $BaseDir}},
+        @{Name="BerryFirmness"; File="31_berry_firmness.csv"; Func={Generate-BerryFirmnessCsv $BaseDir}},
+        @{Name="BerryFlavor"; File="32_berry_flavor.csv"; Func={Generate-BerryFlavorCsv $BaseDir}},
+        @{Name="Characteristics"; File="33_characteristics.csv"; Func={Generate-CharacteristicsCsv $BaseDir}},
+        @{Name="ContestEffects"; File="34_contest_effects.csv"; Func={Generate-ContestEffectsCsv $BaseDir}},
+        @{Name="ContestTypes"; File="35_contest_types.csv"; Func={Generate-ContestTypesCsv $BaseDir}},
+        @{Name="EncounterConditions"; File="36_encounter_conditions.csv"; Func={Generate-EncounterConditionsCsv $BaseDir}},
+        @{Name="EncounterConditionValues"; File="37_encounter_condition_values.csv"; Func={Generate-EncounterConditionValuesCsv $BaseDir}},
+        @{Name="EncounterMethods"; File="38_encounter_methods.csv"; Func={Generate-EncounterMethodsCsv $BaseDir}},
+        @{Name="Genders"; File="39_genders.csv"; Func={Generate-GendersCsv $BaseDir}},
+        @{Name="ItemAttributes"; File="40_item_attributes.csv"; Func={Generate-ItemAttributesCsv $BaseDir}},
+        @{Name="ItemFlingEffects"; File="41_item_fling_effects.csv"; Func={Generate-ItemFlingEffectsCsv $BaseDir}},
+        @{Name="Locations"; File="42_locations.csv"; Func={Generate-LocationsCsv $BaseDir}},
+        @{Name="LocationAreas"; File="43_location_areas.csv"; Func={Generate-LocationAreasCsv $BaseDir}},
+        @{Name="Machines"; File="44_machines.csv"; Func={Generate-MachinesCsv $BaseDir}},
+        @{Name="MoveAilments"; File="45_move_ailments.csv"; Func={Generate-MoveAilmentsCsv $BaseDir}},
+        @{Name="MoveBattleStyles"; File="46_move_battle_styles.csv"; Func={Generate-MoveBattleStylesCsv $BaseDir}},
+        @{Name="MoveCategories"; File="47_move_categories.csv"; Func={Generate-MoveCategoriesCsv $BaseDir}},
+        @{Name="MoveLearnMethods"; File="48_move_learn_methods.csv"; Func={Generate-MoveLearnMethodsCsv $BaseDir}},
+        @{Name="MoveTargets"; File="49_move_targets.csv"; Func={Generate-MoveTargetsCsv $BaseDir}},
+        @{Name="PalParkAreas"; File="50_pal_park_areas.csv"; Func={Generate-PalParkAreasCsv $BaseDir}},
+        @{Name="PokeathlonStats"; File="51_pokeathlon_stats.csv"; Func={Generate-PokeathlonStatsCsv $BaseDir}},
+        @{Name="PokemonForms"; File="52_pokemon_forms.csv"; Func={Generate-PokemonFormsCsv $BaseDir $tempMediaDir}},
+        @{Name="SuperContestEffects"; File="53_super_contest_effects.csv"; Func={Generate-SuperContestEffectsCsv $BaseDir}},
+        @{Name="Versions"; File="54_versions.csv"; Func={Generate-VersionsCsv $BaseDir}}
     )
     
     $tableIndex = 1
     foreach ($table in $tables) {
         $filePath = Join-Path $tempDatabaseDir $table.File
-        Write-Host "[$tableIndex/29] Generando $($table.Name)..." -ForegroundColor Cyan
+        Write-Host "[$tableIndex/$($tables.Count)] Generando $($table.Name)..." -ForegroundColor Cyan
         
         $csvRows = & $table.Func
+        
+        # Log para tablas críticas
+        if ($table.Name -eq "PokedexEntries") {
+            $rowCount = $csvRows.Count - 1  # Restar header
+            Write-Host "  [INFO] PokedexEntries: $rowCount filas generadas (excluyendo header)" -ForegroundColor DarkGray
+            if ($rowCount -eq 0) {
+                Write-Warning "  [ADVERTENCIA] PokedexEntries está vacío - las relaciones no se generaron correctamente"
+            }
+        }
+        if ($table.Name -eq "Pokemon") {
+            $rowCount = $csvRows.Count - 1  # Restar header
+            Write-Host "  [INFO] Pokemon: $rowCount filas generadas (excluyendo header)" -ForegroundColor DarkGray
+        }
+        if ($table.Name -eq "Regions") {
+            $rowCount = $csvRows.Count - 1  # Restar header
+            Write-Host "  [INFO] Regions: $rowCount filas generadas (excluyendo header)" -ForegroundColor DarkGray
+        }
         
         # Escribir CSV línea por línea para evitar problemas con saltos de línea en campos
         $utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -3601,19 +5139,22 @@ function Process-DataForBackup {
                 $data = Get-Content $dataJson -Raw | ConvertFrom-Json
                 $apiId = $data.id
                 
-                # Copiar archivos multimedia de pokemon-form
+                # Copiar archivos multimedia de pokemon-form con nombres aplanados
                 $formSourceDir = Join-Path $BaseDir "pokemon-form\$apiId"
-                $formMediaDir = Join-Path $tempMediaDir "pokemon-form\$apiId"
                 
                 if (Test-Path $formSourceDir) {
-                    if (-not (Test-Path $formMediaDir)) {
-                        New-Item -ItemType Directory -Force -Path $formMediaDir | Out-Null
+                    # Crear carpeta pokemon-form dentro de tempMediaDir (organización por tipo)
+                    $pokemonFormMediaDir = Join-Path $tempMediaDir "pokemon-form"
+                    if (-not (Test-Path $pokemonFormMediaDir)) {
+                        New-Item -ItemType Directory -Force -Path $pokemonFormMediaDir | Out-Null
                     }
                     $formMediaFiles = Get-ChildItem -Path $formSourceDir -File -ErrorAction SilentlyContinue | Where-Object {
                         $_.Extension -match '\.(svg|png|jpg|jpeg)$'
                     }
                     foreach ($formFile in $formMediaFiles) {
-                        $targetPath = Join-Path $formMediaDir $formFile.Name
+                        # Crear nombre aplanado: media_pokemon-form_{id}_{filename}
+                        $flattenedName = "media_pokemon-form_$apiId" + "_" + $formFile.Name
+                        $targetPath = Join-Path $pokemonFormMediaDir $flattenedName
                         if (-not (Test-Path $targetPath)) {
                             Copy-Item -Path $formFile.FullName -Destination $targetPath -Force -ErrorAction SilentlyContinue
                         }
@@ -3649,11 +5190,12 @@ function Process-DataForBackup {
                 $data = Get-Content $dataJson -Raw | ConvertFrom-Json
                 $apiId = $data.id
                 
-                # Copiar archivos multimedia de form
+                # Copiar archivos multimedia de form con nombres aplanados
                 $formSourceDir = Join-Path $BaseDir "form\$apiId"
-                $formMediaDir = Join-Path $tempMediaDir "form\$apiId"
                 
                 if (Test-Path $formSourceDir) {
+                    # Crear carpeta form dentro de tempMediaDir (organización por tipo)
+                    $formMediaDir = Join-Path $tempMediaDir "form"
                     if (-not (Test-Path $formMediaDir)) {
                         New-Item -ItemType Directory -Force -Path $formMediaDir | Out-Null
                     }
@@ -3661,7 +5203,9 @@ function Process-DataForBackup {
                         $_.Extension -match '\.(svg|png|jpg|jpeg)$'
                     }
                     foreach ($formFile in $formMediaFiles) {
-                        $targetPath = Join-Path $formMediaDir $formFile.Name
+                        # Crear nombre aplanado: media_form_{id}_{filename}
+                        $flattenedName = "media_form_$apiId" + "_" + $formFile.Name
+                        $targetPath = Join-Path $formMediaDir $flattenedName
                         if (-not (Test-Path $targetPath)) {
                             Copy-Item -Path $formFile.FullName -Destination $targetPath -Force -ErrorAction SilentlyContinue
                         }
@@ -3712,137 +5256,98 @@ function Process-DataForBackup {
     Write-Host "  Tamaño total: $totalSizeMB MB" -ForegroundColor DarkGray
     
     # Directorio base para los ZIPs
-    $zipBasePath = "C:\Users\loren\Desktop\proyectos\pokesearch"
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     
-    $zipFiles = @()
-    $maxZipSizeMB = 600
+    # Asegurar que el directorio de ZIPs existe
+    if (-not (Test-Path $zipBasePath)) {
+        Write-Host "[INFO] Creando directorio para ZIPs: $zipBasePath" -ForegroundColor DarkCyan
+        New-Item -ItemType Directory -Force -Path $zipBasePath | Out-Null
+    }
     
-    # Decidir si crear un solo ZIP o múltiples ZIPs
-    if ($totalSizeMB -lt $maxZipSizeMB) {
-        # Crear un solo ZIP con todo (database + media)
-        Write-Host ""
-        Write-Host "[INFO] Tamaño total ($totalSizeMB MB) < $maxZipSizeMB MB, creando un solo ZIP..." -ForegroundColor DarkCyan
-        
-        $singleZipPath = Join-Path $zipBasePath "poke_searcher_backup.zip"
-        
-        if (Test-Path $singleZipPath) {
-            Remove-Item $singleZipPath -Force -ErrorAction SilentlyContinue
+    $zipFiles = @()
+    
+    # Siempre crear múltiples ZIPs: uno para database y varios para media
+    # Esto es necesario porque la app Flutter espera descargar ZIPs separados
+    Write-Host ""
+    Write-Host "[INFO] Tamaño total: $totalSizeMB MB, creando múltiples ZIPs..." -ForegroundColor DarkCyan
+    
+    # 1. Crear ZIP para database (CSV)
+    Write-Host ""
+    Write-Host "[INFO] Creando ZIP para database (CSV)..." -ForegroundColor DarkCyan
+    $databaseZipPath = Join-Path $zipBasePath "poke_searcher_backup_database.zip"
+    
+    if (Test-Path $databaseZipPath) {
+        Remove-Item $databaseZipPath -Force -ErrorAction SilentlyContinue
+    }
+    
+    if (Test-Path $tempDatabaseDir) {
+        $csvFiles = Get-ChildItem -Path $tempDatabaseDir -Filter "*.csv" -File
+        if ($csvFiles.Count -gt 0) {
+            [System.IO.Compression.ZipFile]::CreateFromDirectory($tempDatabaseDir, $databaseZipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+            $zipSize = (Get-Item $databaseZipPath).Length
+            $zipSizeMB = [Math]::Round($zipSize / 1MB, 2)
+            Write-Host "  ✅ ZIP database creado: $databaseZipPath ($zipSizeMB MB, $($csvFiles.Count) CSV)" -ForegroundColor Green
+            $zipFiles += @{
+                Path = $databaseZipPath
+                Type = "database"
+                Size = $zipSizeMB
+            }
+        } else {
+            Write-Host "  ⚠️ No hay archivos CSV para comprimir" -ForegroundColor Yellow
         }
+    }
+    
+    # 2. Crear ZIPs para media (uno por carpeta de media)
+    Write-Host ""
+    Write-Host "[INFO] Creando ZIPs para media..." -ForegroundColor DarkCyan
+    
+    if (Test-Path $tempMediaDir) {
+        $mediaFolders = Get-ChildItem -Path $tempMediaDir -Directory
+        $mediaZipIndex = 1
         
-        # Crear directorio temporal con estructura completa
-        $tempSingleZipDir = Join-Path $env:TEMP "poke_searcher_single_zip"
-        if (Test-Path $tempSingleZipDir) {
-            Remove-Item $tempSingleZipDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        New-Item -ItemType Directory -Force -Path $tempSingleZipDir | Out-Null
-        
-        # Copiar database
-        if (Test-Path $tempDatabaseDir) {
-            $targetDatabaseDir = Join-Path $tempSingleZipDir "database"
-            Copy-Item -Path $tempDatabaseDir -Destination $targetDatabaseDir -Recurse -Force
-        }
-        
-        # Copiar media
-        if (Test-Path $tempMediaDir) {
-            $targetMediaDir = Join-Path $tempSingleZipDir "media"
-            Copy-Item -Path $tempMediaDir -Destination $targetMediaDir -Recurse -Force
-        }
-        
-        # Crear ZIP único
-        [System.IO.Compression.ZipFile]::CreateFromDirectory($tempSingleZipDir, $singleZipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
-        
-        # Limpiar directorio temporal
-        Remove-Item $tempSingleZipDir -Recurse -Force -ErrorAction SilentlyContinue
-        
-        $zipSize = (Get-Item $singleZipPath).Length
-        $zipSizeMB = [Math]::Round($zipSize / 1MB, 2)
-        Write-Host "  ✅ ZIP único creado: $singleZipPath ($zipSizeMB MB)" -ForegroundColor Green
-        $zipFiles += @{
-            Path = $singleZipPath
-            Type = "complete"
-            Size = $zipSizeMB
-        }
-    } else {
-        # Crear múltiples ZIPs: uno para database y varios para media
-        Write-Host ""
-        Write-Host "[INFO] Tamaño total ($totalSizeMB MB) >= $maxZipSizeMB MB, creando múltiples ZIPs..." -ForegroundColor DarkCyan
-        
-        # 1. Crear ZIP para database (CSV)
-        Write-Host ""
-        Write-Host "[INFO] Creando ZIP para database (CSV)..." -ForegroundColor DarkCyan
-        $databaseZipPath = Join-Path $zipBasePath "poke_searcher_backup_database.zip"
-        
-        if (Test-Path $databaseZipPath) {
-            Remove-Item $databaseZipPath -Force -ErrorAction SilentlyContinue
-        }
-        
-        if (Test-Path $tempDatabaseDir) {
-            $csvFiles = Get-ChildItem -Path $tempDatabaseDir -Filter "*.csv" -File
-            if ($csvFiles.Count -gt 0) {
-                [System.IO.Compression.ZipFile]::CreateFromDirectory($tempDatabaseDir, $databaseZipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
-                $zipSize = (Get-Item $databaseZipPath).Length
+        foreach ($mediaFolder in $mediaFolders) {
+            $mediaZipPath = Join-Path $zipBasePath "poke_searcher_backup_media_$($mediaFolder.Name).zip"
+            
+            if (Test-Path $mediaZipPath) {
+                Remove-Item $mediaZipPath -Force -ErrorAction SilentlyContinue
+            }
+            
+            # Verificar que la carpeta tenga archivos
+            $mediaFiles = Get-ChildItem -Path $mediaFolder.FullName -Recurse -File
+            if ($mediaFiles.Count -gt 0) {
+                # Crear ZIP con archivos aplanados en la raíz (Flutter no puede crear directorios anidados)
+                $tempMediaZipDir = Join-Path $env:TEMP "poke_searcher_media_zip_$($mediaFolder.Name)"
+                if (Test-Path $tempMediaZipDir) {
+                    Remove-Item $tempMediaZipDir -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                New-Item -ItemType Directory -Force -Path $tempMediaZipDir | Out-Null
+                
+                # Copiar todos los archivos a la raíz del directorio temporal con sus nombres aplanados
+                foreach ($mediaFile in $mediaFiles) {
+                    # Los archivos ya tienen nombres aplanados (media_pokemon_1_sprite_front_default.svg)
+                    # Solo copiarlos a la raíz del directorio temporal
+                    $targetFile = Join-Path $tempMediaZipDir $mediaFile.Name
+                    Copy-Item -Path $mediaFile.FullName -Destination $targetFile -Force -ErrorAction SilentlyContinue
+                }
+                
+                # Crear ZIP desde el directorio temporal (todos los archivos en la raíz)
+                [System.IO.Compression.ZipFile]::CreateFromDirectory($tempMediaZipDir, $mediaZipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+                
+                # Limpiar directorio temporal
+                Remove-Item $tempMediaZipDir -Recurse -Force -ErrorAction SilentlyContinue
+                
+                $zipSize = (Get-Item $mediaZipPath).Length
                 $zipSizeMB = [Math]::Round($zipSize / 1MB, 2)
-                Write-Host "  ✅ ZIP database creado: $databaseZipPath ($zipSizeMB MB, $($csvFiles.Count) CSV)" -ForegroundColor Green
+                Write-Host "  ✅ ZIP media creado: $mediaZipPath ($zipSizeMB MB, $($mediaFiles.Count) archivos)" -ForegroundColor Green
                 $zipFiles += @{
-                    Path = $databaseZipPath
-                    Type = "database"
+                    Path = $mediaZipPath
+                    Type = "media"
+                    Folder = $mediaFolder.Name
                     Size = $zipSizeMB
                 }
+                $mediaZipIndex++
             } else {
-                Write-Host "  ⚠️ No hay archivos CSV para comprimir" -ForegroundColor Yellow
-            }
-        }
-        
-        # 2. Crear ZIPs para media (uno por carpeta de media)
-        Write-Host ""
-        Write-Host "[INFO] Creando ZIPs para media..." -ForegroundColor DarkCyan
-        
-        if (Test-Path $tempMediaDir) {
-            $mediaFolders = Get-ChildItem -Path $tempMediaDir -Directory
-            $mediaZipIndex = 1
-            
-            foreach ($mediaFolder in $mediaFolders) {
-                $mediaZipPath = Join-Path $zipBasePath "poke_searcher_backup_media_$($mediaFolder.Name).zip"
-                
-                if (Test-Path $mediaZipPath) {
-                    Remove-Item $mediaZipPath -Force -ErrorAction SilentlyContinue
-                }
-                
-                # Verificar que la carpeta tenga archivos
-                $mediaFiles = Get-ChildItem -Path $mediaFolder.FullName -Recurse -File
-                if ($mediaFiles.Count -gt 0) {
-                    # Crear un directorio temporal con la estructura media/folder
-                    $tempMediaZipDir = Join-Path $env:TEMP "poke_searcher_media_zip_$($mediaFolder.Name)"
-                    if (Test-Path $tempMediaZipDir) {
-                        Remove-Item $tempMediaZipDir -Recurse -Force -ErrorAction SilentlyContinue
-                    }
-                    New-Item -ItemType Directory -Force -Path $tempMediaZipDir | Out-Null
-                    
-                    $mediaSubDir = Join-Path $tempMediaZipDir "media"
-                    New-Item -ItemType Directory -Force -Path $mediaSubDir | Out-Null
-                    
-                    $targetFolder = Join-Path $mediaSubDir $mediaFolder.Name
-                    Copy-Item -Path $mediaFolder.FullName -Destination $targetFolder -Recurse -Force
-                    
-                    [System.IO.Compression.ZipFile]::CreateFromDirectory($tempMediaZipDir, $mediaZipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
-                    
-                    # Limpiar directorio temporal
-                    Remove-Item $tempMediaZipDir -Recurse -Force -ErrorAction SilentlyContinue
-                    
-                    $zipSize = (Get-Item $mediaZipPath).Length
-                    $zipSizeMB = [Math]::Round($zipSize / 1MB, 2)
-                    Write-Host "  ✅ ZIP media creado: $mediaZipPath ($zipSizeMB MB, $($mediaFiles.Count) archivos)" -ForegroundColor Green
-                    $zipFiles += @{
-                        Path = $mediaZipPath
-                        Type = "media"
-                        Folder = $mediaFolder.Name
-                        Size = $zipSizeMB
-                    }
-                    $mediaZipIndex++
-                } else {
-                    Write-Host "  ⚠️ Carpeta $($mediaFolder.Name) está vacía, omitiendo" -ForegroundColor Yellow
-                }
+                Write-Host "  ⚠️ Carpeta $($mediaFolder.Name) está vacía, omitiendo" -ForegroundColor Yellow
             }
         }
     }

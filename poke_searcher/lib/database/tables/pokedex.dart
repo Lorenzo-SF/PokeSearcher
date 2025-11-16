@@ -15,6 +15,9 @@ class Pokedex extends Table {
   TextColumn get descriptionsJson => text().nullable()();
   TextColumn get pokemonEntriesJson => text().nullable()();
   
+  // JSON para version_groups (juegos/versiones de esta pokedex)
+  TextColumn get versionGroupsJson => text().nullable()();
+  
   @override
   Set<Column> get primaryKey => {id};
 }

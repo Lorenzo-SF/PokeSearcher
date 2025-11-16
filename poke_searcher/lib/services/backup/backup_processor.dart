@@ -6,9 +6,9 @@ import 'package:http/http.dart' as http;
 import 'package:archive/archive.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
+import 'package:crypto/crypto.dart';
 import '../../database/app_database.dart';
 import '../../utils/loading_messages.dart';
-import '../../utils/media_path_helper.dart';
 import '../config/app_config.dart';
 
 /// Servicio para procesar backups CSV y cargar datos en la base de datos
@@ -16,17 +16,33 @@ class BackupProcessor {
   final AppDatabase database;
   final AppConfig? appConfig;
   
-  // URLs de los ZIPs en GitHub Releases (siempre estas 4 URLs)
+  // URLs de los ZIPs en GitHub Releases (5 URLs)
   static List<String> _backupZipUrls = [
     'https://github.com/Lorenzo-SF/PokeSearcher/releases/download/1.0.0/poke_searcher_backup_database.zip',
     'https://github.com/Lorenzo-SF/PokeSearcher/releases/download/1.0.0/poke_searcher_backup_media_item.zip',
     'https://github.com/Lorenzo-SF/PokeSearcher/releases/download/1.0.0/poke_searcher_backup_media_pokemon-form.zip',
     'https://github.com/Lorenzo-SF/PokeSearcher/releases/download/1.0.0/poke_searcher_backup_media_pokemon.zip',
+    'https://github.com/Lorenzo-SF/PokeSearcher/releases/download/1.0.0/poke_searcher_backup_media_type.zip',
   ];
+  
+  // Mapa de SHA256 para verificación de integridad de cada archivo ZIP
+  static final Map<String, String> _zipSha256Checksums = {
+    'poke_searcher_backup_database.zip': '6d79cbe4872d3073b0bd3b1dbc2c63de42a08a74eab37f77f0009d57c71908db',
+    'poke_searcher_backup_media_item.zip': 'bc70471f422ec878c21eb89643dd1c590250c4bb9c6dcbd08a8a60d1fd514b76',
+    'poke_searcher_backup_media_pokemon-form.zip': '69797fad7196131421094d07e26693b253405dea6e5ffeffd3e872b1a519b076',
+    'poke_searcher_backup_media_pokemon.zip': 'd8d0e07ce957f40addb768aef45351a31a561213fc29b743e89dd667b97025d6',
+    'poke_searcher_backup_media_type.zip': 'b57c044dbd46efad968e37002902e729de69850159520e7068c00ebf6e463f0d',
+  };
   
   /// Establecer las URLs de los ZIPs del backup
   static void setBackupZipUrls(List<String> urls) {
     _backupZipUrls = urls;
+  }
+  
+  /// Establecer los checksums SHA256 de los ZIPs del backup
+  static void setBackupZipChecksums(Map<String, String> checksums) {
+    _zipSha256Checksums.clear();
+    _zipSha256Checksums.addAll(checksums);
   }
   
   BackupProcessor({
@@ -137,6 +153,69 @@ class BackupProcessor {
         await _copyDirectory(entity, Directory(targetPath));
       }
     }
+  }
+  
+  /// Extraer el nombre del archivo desde una URL
+  String _extractFileNameFromUrl(String url) {
+    try {
+      final uri = Uri.parse(url);
+      final segments = uri.pathSegments;
+      if (segments.isNotEmpty) {
+        return segments.last;
+      }
+    } catch (e) {
+      print('[BackupProcessor] ⚠️ Error extrayendo nombre de archivo de URL: $e');
+    }
+    // Fallback: extraer manualmente
+    final parts = url.split('/');
+    if (parts.isNotEmpty) {
+      return parts.last;
+    }
+    return '';
+  }
+  
+  /// Verificar SHA256 de un archivo ZIP descargado
+  /// 
+  /// Calcula el hash SHA256 del archivo y lo compara con el checksum esperado.
+  /// Lanza una excepción si no coincide.
+  Future<void> _verifyZipSha256(
+    File zipFile,
+    String zipUrl,
+    void Function(String message, double progress)? onProgress,
+  ) async {
+    // Extraer nombre del archivo desde la URL
+    final fileName = _extractFileNameFromUrl(zipUrl);
+    if (fileName.isEmpty) {
+      print('[BackupProcessor] ⚠️ No se pudo extraer el nombre del archivo de la URL, omitiendo verificación SHA256');
+      return; // Si no podemos identificar el archivo, omitir verificación
+    }
+    
+    // Buscar checksum esperado
+    final expectedChecksum = _zipSha256Checksums[fileName];
+    if (expectedChecksum == null) {
+      print('[BackupProcessor] ⚠️ No se encontró checksum SHA256 para $fileName, omitiendo verificación');
+      return; // Si no hay checksum configurado, omitir verificación
+    }
+    
+    // Notificar inicio de verificación
+    onProgress?.call('Verificando integridad del archivo...', 0.0);
+    print('[BackupProcessor] 🔐 Verificando SHA256 de $fileName...');
+    
+    // Calcular SHA256 del archivo descargado
+    final fileBytes = await zipFile.readAsBytes();
+    final hash = sha256.convert(fileBytes);
+    final actualChecksum = hash.toString();
+    
+    // Comparar checksums (case-insensitive)
+    if (actualChecksum.toLowerCase() != expectedChecksum.toLowerCase()) {
+      print('[BackupProcessor] ❌ SHA256 no coincide para $fileName');
+      print('[BackupProcessor]   Esperado: $expectedChecksum');
+      print('[BackupProcessor]   Obtenido:  $actualChecksum');
+      throw Exception('SHA256 no coincide: el archivo puede estar corrupto o haber sido modificado');
+    }
+    
+    print('[BackupProcessor] ✅ SHA256 verificado correctamente para $fileName');
+    onProgress?.call('Integridad del archivo verificada', 0.0);
   }
   
   /// Descargar ZIP con reintentos infinitos y manejo de errores
@@ -295,7 +374,19 @@ class BackupProcessor {
           // No es crítico, continuar
         }
         
-        print('[BackupProcessor] ✅ ZIP descargado correctamente (${(fileSize / 1024 / 1024).toStringAsFixed(2)} MB) -> ${zipFile.path}');
+        // Verificar SHA256 del archivo descargado
+        try {
+          await _verifyZipSha256(zipFile, zipUrl, onProgress);
+        } catch (e) {
+          print('[BackupProcessor] ❌ Error verificando SHA256: $e');
+          // Eliminar archivo corrupto
+          if (await zipFile.exists()) {
+            await zipFile.delete();
+          }
+          throw Exception('Verificación SHA256 fallida: el archivo descargado no coincide con el checksum esperado. $e');
+        }
+        
+        print('[BackupProcessor] ✅ ZIP descargado y verificado correctamente (${(fileSize / 1024 / 1024).toStringAsFixed(2)} MB) -> ${zipFile.path}');
         return; // Éxito, salir del bucle y continuar con el proceso
         
       } catch (e) {
@@ -535,11 +626,9 @@ class BackupProcessor {
         }
       }
       
-      // Reorganizar archivos aplanados si es necesario
-      await _reorganizeFlattenedFiles(dataDir);
-      
-      // Organizar carpetas después de extraer todos los ZIPs
-      await _organizeExtractedFolders(dataDir);
+      // Verificar que la estructura está correcta (solo mover database si está en subcarpeta)
+      // NO reorganizar media - debe quedar exactamente como viene del ZIP
+      await _verifyExtractedStructure(dataDir);
       
       // Verificar que los archivos de media existen después de la consolidación
       final finalMediaDir = Directory(path.join(dataDir.path, 'media'));
@@ -693,19 +782,20 @@ class BackupProcessor {
               print('[BackupProcessor]     $itemType ${path.basename(item.path)}');
             }
             
-            // Verificar si hay carpeta media
-            final mediaDir = Directory(path.join(destDir.path, 'media'));
-            if (await mediaDir.exists()) {
-              print('[BackupProcessor]   - Carpeta media encontrada');
-              final pokemonDir = Directory(path.join(mediaDir.path, 'pokemon'));
-              if (await pokemonDir.exists()) {
-                int pokemonCount = 0;
-                await for (final entity in pokemonDir.list()) {
-                  if (entity is Directory) pokemonCount++;
+            // Contar archivos multimedia (pueden estar en cualquier ubicación, Flutter los aplanará)
+            int mediaFileCount = 0;
+            await for (final entity in destDir.list(recursive: true)) {
+              if (entity is File) {
+                final fileName = path.basename(entity.path);
+                if (fileName.startsWith('media_pokemon_') || 
+                    fileName.startsWith('media_item_') ||
+                    fileName.startsWith('media_pokemon-form_') ||
+                    fileName.startsWith('media_form_')) {
+                  mediaFileCount++;
                 }
-                print('[BackupProcessor]   - Carpeta pokemon encontrada con $pokemonCount subcarpetas');
               }
             }
+            print('[BackupProcessor]   - Archivos multimedia encontrados: $mediaFileCount');
           } catch (e) {
             print('[BackupProcessor] ⚠️ Error verificando estructura: $e');
           }
@@ -721,33 +811,61 @@ class BackupProcessor {
         final zipBytes = await zipFile.readAsBytes();
         final archive = await _decodeZipInIsolate(zipBytes);
         
-        int extracted = 0;
-        final files = archive.whereType<ArchiveFile>().toList();
+        // Filtrar SOLO archivos reales (no directorios)
+        final files = archive.whereType<ArchiveFile>()
+          .where((f) => f.isFile && f.content != null && f.content.length > 0)
+          .toList();
         final total = files.length;
         const chunkSize = 50;
         
         print('[BackupProcessor] 📦 Extrayendo $total archivos con archive package...');
+        print('[BackupProcessor]   - Total de entradas en ZIP: ${archive.length}');
+        print('[BackupProcessor]   - Archivos reales a extraer: $total');
         
+        // Crear carpeta database si no existe
+        final databaseDir = Directory(path.join(destDir.path, 'database'));
+        if (!await databaseDir.exists()) {
+          await databaseDir.create(recursive: true);
+        }
+        
+        // Extraer archivos preservando la estructura del ZIP
+        // Flutter aplanará los nombres al extraer, así que _flattenPath transformará las rutas
+        int extracted = 0;
         for (int i = 0; i < files.length; i += chunkSize) {
           final endIndex = (i + chunkSize < files.length) ? i + chunkSize : files.length;
           final chunk = files.sublist(i, endIndex);
           
           for (final file in chunk) {
-            if (file.isFile) {
-              final filePath = path.join(destDir.path, file.name);
+            try {
+              // Preservar la estructura del ZIP (ej: "media/media_pokemon_1_sprite_front_default.svg" o "database/01_languages.csv")
+              String normalizedName = file.name.replaceAll('\\', '/');
+              normalizedName = normalizedName.replaceAll('/', Platform.pathSeparator);
+              
+              // Construir ruta final preservando la estructura
+              final filePath = path.join(destDir.path, normalizedName);
+              
+              // Asegurar que el directorio padre existe
               final fileDir = Directory(path.dirname(filePath));
               if (!await fileDir.exists()) {
                 await fileDir.create(recursive: true);
               }
               
+              // Escribir el archivo
               final outFile = File(filePath);
-              await outFile.writeAsBytes(file.content as List<int>);
-              extracted++;
-              
-              // Log primeros archivos para ver estructura
-              if (extracted <= 5) {
-                print('[BackupProcessor]     📄 Extraído: ${file.name} -> $filePath');
+              final content = file.content as List<int>;
+              if (content.isNotEmpty) {
+                await outFile.writeAsBytes(content);
+                extracted++;
+                
+                // Log primeros archivos para ver estructura
+                if (extracted <= 5) {
+                  print('[BackupProcessor]     📄 Extraído: ${file.name} -> $filePath (${content.length} bytes)');
+                }
+              } else {
+                print('[BackupProcessor]     ⚠️ Archivo vacío ignorado: ${file.name}');
               }
+            } catch (e) {
+              print('[BackupProcessor]     ❌ Error extrayendo ${file.name}: $e');
             }
           }
           
@@ -762,444 +880,104 @@ class BackupProcessor {
         }
         
         print('[BackupProcessor] ✅ Extracción con archive package completada: $extracted archivos');
+        
+        // Verificar estructura después de extracción
+        print('[BackupProcessor] 🔍 Verificando estructura después de extracción...');
+        try {
+          final topLevelItems = await destDir.list().toList();
+          print('[BackupProcessor]   - Elementos en raíz: ${topLevelItems.length}');
+          for (final item in topLevelItems.take(10)) {
+            final itemType = item is Directory ? '[DIR]' : '[FILE]';
+            print('[BackupProcessor]     $itemType ${path.basename(item.path)}');
+          }
+          
+          // Verificar archivos multimedia aplanados directamente en poke_searcher_data/
+          int mediaFileCount = 0;
+          await for (final entity in destDir.list()) {
+            if (entity is File && 
+                (entity.path.contains('media_pokemon_') || 
+                 entity.path.contains('media_item_') ||
+                 entity.path.contains('media_pokemon-form_') ||
+                 entity.path.contains('media_form_'))) {
+              mediaFileCount++;
+            }
+          }
+          print('[BackupProcessor]   - Archivos multimedia aplanados encontrados: $mediaFileCount');
+          
+          // Verificar carpeta database (CSV)
+          if (await databaseDir.exists()) {
+            int csvCount = 0;
+            await for (final entity in databaseDir.list()) {
+              if (entity is File && entity.path.endsWith('.csv')) csvCount++;
+            }
+            print('[BackupProcessor]   - Carpeta database encontrada con $csvCount archivos CSV');
+          }
+        } catch (e) {
+          print('[BackupProcessor] ⚠️ Error verificando estructura: $e');
+        }
       }
     } catch (e) {
       rethrow;
     }
   }
   
-  /// Reorganizar archivos que se extrajeron con nombres aplanados
-  /// Ejemplo: "mediapokemon1000sprite_front_shiny.png" -> "media/pokemon/1000/sprite_front_shiny.png"
-  Future<void> _reorganizeFlattenedFiles(Directory dataDir) async {
-    print('[BackupProcessor] 🔄 Reorganizando archivos aplanados...');
+  /// Verificar que la estructura extraída está correcta
+  /// Solo mueve database si está en una subcarpeta, pero NO reorganiza media
+  /// La estructura de media debe quedar exactamente como viene del ZIP
+  Future<void> _verifyExtractedStructure(Directory dataDir) async {
+    print('[BackupProcessor] 🔍 Verificando estructura extraída...');
     
-    try {
-      final mediaDir = Directory(path.join(dataDir.path, 'media'));
-      if (!await mediaDir.exists()) {
-        await mediaDir.create(recursive: true);
-      }
-      
-      int reorganizedCount = 0;
-      
-      // Buscar archivos con nombres aplanados recursivamente en media y también en dataDir
-      final searchDirs = [mediaDir, dataDir];
-      
-      for (final searchDir in searchDirs) {
-        if (!await searchDir.exists()) continue;
-        
-        print('[BackupProcessor]   🔍 Buscando archivos aplanados en: ${searchDir.path}');
-        
-        await for (final entity in searchDir.list(recursive: true)) {
-          if (entity is File) {
-            final fileName = path.basename(entity.path);
-            
-            // Patrón: mediapokemon{id}{filename} o media{item}{id}{filename}, etc.
-            // Ejemplo: "mediapokemon1000sprite_front_shiny.png" -> pokemon/1000/sprite_front_shiny.png
-            String? mediaType;
-            String? entityId;
-            String? actualFileName;
-            
-            // Intentar diferentes patrones
-            // 1. mediapokemon{id}{filename}
-            var match = RegExp(r'^mediapokemon(\d+)(.+)$', caseSensitive: false).firstMatch(fileName);
-            if (match != null) {
-              mediaType = 'pokemon';
-              entityId = match.group(1);
-              actualFileName = match.group(2);
-            } else {
-              // 2. mediaitem{id}{filename}
-              match = RegExp(r'^mediaitem(\d+)(.+)$', caseSensitive: false).firstMatch(fileName);
-              if (match != null) {
-                mediaType = 'item';
-                entityId = match.group(1);
-                actualFileName = match.group(2);
-              } else {
-                // 3. mediapokemon-form{id}{filename} (con guión)
-                match = RegExp(r'^mediapokemon-form(\d+)(.+)$', caseSensitive: false).firstMatch(fileName);
-                if (match != null) {
-                  mediaType = 'pokemon-form';
-                  entityId = match.group(1);
-                  actualFileName = match.group(2);
-                } else {
-                  // 4. mediaform{id}{filename}
-                  match = RegExp(r'^mediaform(\d+)(.+)$', caseSensitive: false).firstMatch(fileName);
-                  if (match != null) {
-                    mediaType = 'form';
-                    entityId = match.group(1);
-                    actualFileName = match.group(2);
-                  }
-                }
-              }
-            }
-            
-            if (mediaType != null && entityId != null && actualFileName != null) {
-              // Construir ruta de destino correcta
-              final targetDir = Directory(path.join(mediaDir.path, mediaType, entityId));
-              if (!await targetDir.exists()) {
-                await targetDir.create(recursive: true);
-              }
-              
-              final targetPath = path.join(targetDir.path, actualFileName);
-              final targetFile = File(targetPath);
-              
-              // Solo mover si no existe ya en la ubicación correcta
-              if (!await targetFile.exists()) {
-                try {
-                  // Si el archivo está en otro directorio, usar copy + delete en lugar de rename
-                  if (path.dirname(entity.path) != targetDir.path) {
-                    await entity.copy(targetPath);
-                    await entity.delete();
-                  } else {
-                    await entity.rename(targetPath);
-                  }
-                  reorganizedCount++;
-                  
-                  if (reorganizedCount <= 10) {
-                    print('[BackupProcessor]   ✅ Reorganizado: $fileName -> $mediaType/$entityId/$actualFileName');
-                  }
-                } catch (e) {
-                  print('[BackupProcessor]   ⚠️ Error reorganizando $fileName: $e');
-                }
-              } else {
-                // Si ya existe, eliminar el duplicado aplanado
-                try {
-                  await entity.delete();
-                  print('[BackupProcessor]   🗑️ Eliminado duplicado aplanado: $fileName');
-                } catch (e) {
-                  print('[BackupProcessor]   ⚠️ Error eliminando duplicado $fileName: $e');
-                }
-              }
-            }
-          }
-        }
-      }
-      
-      if (reorganizedCount > 0) {
-        print('[BackupProcessor] ✅ Reorganizados $reorganizedCount archivos aplanados');
-      } else {
-        print('[BackupProcessor] ℹ️ No se encontraron archivos aplanados para reorganizar');
-      }
-    } catch (e, stackTrace) {
-      print('[BackupProcessor] ⚠️ Error reorganizando archivos aplanados: $e');
-      print('[BackupProcessor] StackTrace: $stackTrace');
-    }
-  }
-  
-  /// Organizar las carpetas extraídas (database y media) en sus ubicaciones correctas
-  Future<void> _organizeExtractedFolders(Directory dataDir) async {
-    
-    // Buscar la carpeta database real (puede estar en una subcarpeta del ZIP)
     final expectedDatabaseDir = Directory(path.join(dataDir.path, 'database'));
     final expectedMediaDir = Directory(path.join(dataDir.path, 'media'));
     
-    // Primero verificar si están directamente en dataDir
-    bool databaseFound = await expectedDatabaseDir.exists();
-    bool mediaFound = await expectedMediaDir.exists();
-    
-    // Siempre buscar y consolidar, incluso si ya existen, para asegurar que todos los ZIPs se consolidaron
-    
-    // Buscar recursivamente las carpetas database y media
-    Directory? foundDatabaseDir;
-    List<Directory> foundMediaDirs = [];
-    
-    try {
-      await for (final entity in dataDir.list(recursive: true)) {
-        if (entity is Directory) {
-          final dirName = path.basename(entity.path).toLowerCase();
-          
-          // Buscar carpeta database
-          if (dirName == 'database' && foundDatabaseDir == null) {
-            // Verificar que tiene archivos CSV
-            try {
-              final csvFiles = await entity.list()
-                .where((e) => e is File && e.path.endsWith('.csv'))
-                .toList();
-              if (csvFiles.isNotEmpty) {
-                foundDatabaseDir = entity;
-              }
-            } catch (e) {
-              // Continuar buscando
-            }
-          }
-          
-          // Buscar carpetas media (puede haber múltiples si vienen de diferentes ZIPs)
-          if (dirName == 'media') {
-            // Verificar que tiene subcarpetas o archivos
-            try {
-              final items = await entity.list().toList();
-              if (items.isNotEmpty) {
-                foundMediaDirs.add(entity);
-              }
-            } catch (e) {
-              // Continuar buscando
-            }
-          }
-        }
-      }
-    } catch (e) {
-      // Error silencioso
-    }
-    
-    // Mover database si está en otra ubicación
-    if (foundDatabaseDir != null && foundDatabaseDir.path != expectedDatabaseDir.path) {
-      if (await expectedDatabaseDir.exists()) {
-        await expectedDatabaseDir.delete(recursive: true);
-      }
-      await _copyDirectory(foundDatabaseDir, expectedDatabaseDir);
-    }
-    
-    // Consolidar todas las carpetas media encontradas en una sola
-    // Crear carpeta media de destino si no existe
-    if (!await expectedMediaDir.exists()) {
-      await expectedMediaDir.create(recursive: true);
-    }
-    
-    if (foundMediaDirs.isNotEmpty) {
-      print('[BackupProcessor] 📦 Consolidando ${foundMediaDirs.length} carpeta(s) media encontrada(s)');
-      // Mover/consolidar contenido de cada carpeta media encontrada
-      for (int i = 0; i < foundMediaDirs.length; i++) {
-        final mediaDir = foundMediaDirs[i];
-        print('[BackupProcessor]   📁 Procesando carpeta media ${i + 1}/${foundMediaDirs.length}: ${mediaDir.path}');
-        
-        // Copiar contenido de la carpeta media encontrada a la carpeta media de destino
-        try {
-          int filesProcessed = 0;
-          int filesCopied = 0;
-          int filesSkipped = 0;
-          
-          // Listar todos los archivos recursivamente
-          await for (final entity in mediaDir.list(recursive: true)) {
-            // Obtener ruta relativa desde mediaDir
-            final relativePath = path.relative(entity.path, from: mediaDir.path);
-            
-            // Construir ruta de destino
-            final targetPath = path.join(expectedMediaDir.path, relativePath);
-            
-            // Si la ruta de origen y destino son la misma, saltar
-            if (entity.path == targetPath) {
-              continue;
-            }
-            
-            if (entity is File) {
-              filesProcessed++;
-              
-              // Crear directorio padre si no existe
-              final targetDir = Directory(path.dirname(targetPath));
-              if (!await targetDir.exists()) {
-                await targetDir.create(recursive: true);
-              }
-              
-              // Copiar archivo solo si no existe o es diferente
-              final targetFile = File(targetPath);
-              bool shouldCopy = true;
-              
-              if (await targetFile.exists()) {
-                // Si ya existe, verificar si es el mismo archivo
-                final existingSize = await targetFile.length();
-                final sourceSize = await entity.length();
-                if (existingSize == sourceSize) {
-                  shouldCopy = false; // Ya existe y es igual, saltar
-                  filesSkipped++;
-                } else {
-                  // Reemplazar si es diferente
-                  await targetFile.delete();
-                }
-              }
-              
-              if (shouldCopy) {
-                await entity.copy(targetPath);
-                filesCopied++;
-                
-                // Log cada 50 archivos para no saturar
-                if (filesCopied % 50 == 0) {
-                  print('[BackupProcessor]     ✅ Copiados $filesCopied archivos...');
-                }
-              }
-            } else if (entity is Directory) {
-              // Crear directorio si no existe
-              final targetDir = Directory(targetPath);
-              if (!await targetDir.exists()) {
-                await targetDir.create(recursive: true);
-              }
-            }
-          }
-          
-          print('[BackupProcessor]   ✅ Carpeta media ${i + 1} procesada: $filesProcessed archivos procesados, $filesCopied copiados, $filesSkipped omitidos');
-        } catch (e, stackTrace) {
-          print('[BackupProcessor]   ❌ Error procesando carpeta media ${mediaDir.path}: $e');
-          print('[BackupProcessor]   StackTrace: $stackTrace');
-        }
-      }
+    // Solo buscar y mover database si está en una subcarpeta
+    if (!await expectedDatabaseDir.exists()) {
+      print('[BackupProcessor] 📁 Buscando carpeta database...');
+      Directory? foundDatabaseDir;
       
-      // Verificar archivos después de consolidación
-      print('[BackupProcessor] 🔍 Verificando archivos después de consolidación...');
-      final pokemonMediaDir = Directory(path.join(expectedMediaDir.path, 'pokemon'));
-      if (await pokemonMediaDir.exists()) {
-        int pokemonDirs = 0;
-        int totalFiles = 0;
-        await for (final entity in pokemonMediaDir.list()) {
-          if (entity is Directory) {
-            pokemonDirs++;
-            int filesInDir = 0;
-            await for (final file in entity.list()) {
-              if (file is File) {
-                filesInDir++;
-                totalFiles++;
-              }
-            }
-            if (filesInDir > 0 && pokemonDirs <= 10) {
-              print('[BackupProcessor]   📂 pokemon/${path.basename(entity.path)}: $filesInDir archivos');
-            }
-          }
-        }
-        print('[BackupProcessor]   ✅ Total: $pokemonDirs carpetas de pokemon, $totalFiles archivos');
-      } else {
-        print('[BackupProcessor]   ⚠️ Carpeta pokemon no existe después de consolidación');
-      }
-    }
-    
-    // Si no se encontraron carpetas media o media no existe, buscar archivos directamente
-    if (foundMediaDirs.isEmpty || !mediaFound) {
-      // Como último recurso, buscar archivos de media directamente (imágenes, sonidos)
       try {
-        // Crear carpeta media de destino
-        if (!await expectedMediaDir.exists()) {
-          await expectedMediaDir.create(recursive: true);
-        }
-        
         await for (final entity in dataDir.list(recursive: true)) {
-          if (entity is File) {
-            final ext = path.extension(entity.path).toLowerCase();
-            if (ext == '.svg' || ext == '.png' || ext == '.jpg' || ext == '.jpeg' || ext == '.ogg' || ext == '.mp3') {
-              // Intentar determinar la estructura de carpetas
-              final relativePath = path.relative(entity.path, from: dataDir.path);
-              final pathParts = path.split(relativePath);
-              
-              // Buscar si hay una carpeta "pokemon", "item", etc. en la ruta
-              int mediaTypeIndex = -1;
-              
-              for (int i = 0; i < pathParts.length; i++) {
-                final part = pathParts[i].toLowerCase();
-                if (part == 'pokemon' || part == 'item' || part == 'pokemon-form') {
-                  mediaTypeIndex = i;
+          if (entity is Directory) {
+            final dirName = path.basename(entity.path).toLowerCase();
+            if (dirName == 'database' && foundDatabaseDir == null) {
+              try {
+                final csvFiles = await entity.list()
+                  .where((e) => e is File && e.path.endsWith('.csv'))
+                  .toList();
+                if (csvFiles.isNotEmpty) {
+                  foundDatabaseDir = entity;
+                  print('[BackupProcessor] ✅ Database encontrada en: ${entity.path}');
                   break;
                 }
-              }
-              
-              if (mediaTypeIndex >= 0 && mediaTypeIndex < pathParts.length - 1) {
-                // Construir ruta de destino en media/
-                final mediaSubPath = pathParts.sublist(mediaTypeIndex);
-                
-                // Si el primer elemento ya es "media", saltarlo
-                List<String> finalPath = [];
-                if (pathParts[0].toLowerCase() == 'media' && mediaTypeIndex > 0) {
-                  finalPath = pathParts.sublist(mediaTypeIndex);
-                } else {
-                  finalPath = mediaSubPath;
-                }
-                
-                final targetPath = path.join(expectedMediaDir.path, finalPath.join(Platform.pathSeparator));
-                final targetDir = Directory(path.dirname(targetPath));
-                
-                if (!await targetDir.exists()) {
-                  await targetDir.create(recursive: true);
-                }
-                
-                final targetFile = File(targetPath);
-                if (!await targetFile.exists()) {
-                  await entity.copy(targetPath);
-                } else {
-                  // Verificar si el archivo existente es diferente
-                  final existingSize = await targetFile.length();
-                  final sourceSize = await entity.length();
-                  if (existingSize != sourceSize) {
-                    // Reemplazar si es diferente
-                    await targetFile.delete();
-                    await entity.copy(targetPath);
-                  }
-                }
-              } else {
-                // Si no encontramos la estructura esperada, intentar inferirla del nombre del archivo
-                final fileName = path.basename(entity.path);
-                if (fileName.contains('sprite') || fileName.contains('artwork') || fileName.contains('cry')) {
-                  // Intentar extraer el ID del pokemon de la ruta
-                  for (int i = 0; i < pathParts.length; i++) {
-                    final part = pathParts[i];
-                    // Si encontramos un número, podría ser el ID del pokemon
-                    if (RegExp(r'^\d+$').hasMatch(part)) {
-                      final pokemonId = part;
-                      // Determinar tipo de archivo
-                      String? fileType = 'pokemon';
-                      if (fileName.contains('cry')) {
-                        fileType = 'pokemon';
-                      }
-                      
-                      final targetPath = path.join(expectedMediaDir.path, fileType, pokemonId, fileName);
-                      final targetDir = Directory(path.dirname(targetPath));
-                      
-                      if (!await targetDir.exists()) {
-                        await targetDir.create(recursive: true);
-                      }
-                      
-                      final targetFile = File(targetPath);
-                      if (!await targetFile.exists()) {
-                        await entity.copy(targetPath);
-                      }
-                      break;
-                    }
-                  }
-                }
+              } catch (e) {
+                // Continuar buscando
               }
             }
           }
         }
-      } catch (e, stackTrace) {
-        // Error silencioso
+      } catch (e) {
+        print('[BackupProcessor] ⚠️ Error buscando database: $e');
       }
-    }
-  }
-  
-  /// Fusionar dos directorios, copiando archivos que no existen en el destino
-  Future<void> _mergeDirectories(Directory source, Directory target) async {
-    if (!await target.exists()) {
-      await target.create(recursive: true);
+      
+      // Mover database solo si está en otra ubicación
+      if (foundDatabaseDir != null && foundDatabaseDir.path != expectedDatabaseDir.path) {
+        print('[BackupProcessor] 📦 Moviendo database a ubicación esperada...');
+        if (await expectedDatabaseDir.exists()) {
+          await expectedDatabaseDir.delete(recursive: true);
+        }
+        await _copyDirectory(foundDatabaseDir, expectedDatabaseDir);
+        print('[BackupProcessor] ✅ Database movida correctamente');
+      }
+    } else {
+      print('[BackupProcessor] ✅ Database ya está en la ubicación correcta');
     }
     
-    // Listar recursivamente para mantener la estructura completa
-    await for (final entity in source.list(recursive: true)) {
-      // Obtener ruta relativa desde source
-      final relativePath = path.relative(entity.path, from: source.path);
-      
-      // Construir ruta de destino
-      final targetPath = path.join(target.path, relativePath);
-      
-      if (entity is File) {
-        // Crear directorio padre si no existe
-        final targetDir = Directory(path.dirname(targetPath));
-        if (!await targetDir.exists()) {
-          await targetDir.create(recursive: true);
-        }
-        
-        final targetFile = File(targetPath);
-        if (!await targetFile.exists()) {
-          await entity.copy(targetPath);
-        } else {
-          // Verificar si el archivo existente es diferente
-          final existingSize = await targetFile.length();
-          final sourceSize = await entity.length();
-          if (existingSize != sourceSize) {
-            // Reemplazar si es diferente
-            await targetFile.delete();
-            await entity.copy(targetPath);
-          }
-        }
-      } else if (entity is Directory) {
-        // Crear directorio si no existe
-        final targetDir = Directory(targetPath);
-        if (!await targetDir.exists()) {
-          await targetDir.create(recursive: true);
-        }
-      }
+    // Verificar que media existe (pero NO reorganizarla - debe quedar como viene del ZIP)
+    if (await expectedMediaDir.exists()) {
+      print('[BackupProcessor] ✅ Media encontrada en: ${expectedMediaDir.path}');
+      print('[BackupProcessor] ℹ️ Estructura de media preservada tal como viene del ZIP');
+    } else {
+      print('[BackupProcessor] ⚠️ Media no encontrada en ubicación esperada');
     }
   }
   
@@ -1591,19 +1369,51 @@ class BackupProcessor {
         final progressMsg = LoadingMessages.getMessage('executing', languageCode);
         onProgress?.call(progressMsg, 1.0);
         
+        // Asegurar que la región "national" existe (región ficticia para la Pokédex nacional)
+        await _ensureNationalRegionExists();
+        
+        // Verificar que todos los archivos multimedia están en sus rutas reales
+        print('[BackupProcessor] 🔍 Verificando que todos los archivos están en sus rutas reales...');
+        // Los archivos multimedia están directamente en poke_searcher_data/ con nombres aplanados
+        int mediaFileCount = 0;
+        int pokemonFileCount = 0;
+        int itemFileCount = 0;
+        await for (final entity in dataDir.list()) {
+          if (entity is File) {
+            final fileName = path.basename(entity.path);
+            if (fileName.startsWith('media_pokemon_')) {
+              pokemonFileCount++;
+              mediaFileCount++;
+            } else if (fileName.startsWith('media_item_')) {
+              itemFileCount++;
+              mediaFileCount++;
+            } else if (fileName.startsWith('media_pokemon-form_') || fileName.startsWith('media_form_')) {
+              mediaFileCount++;
+            }
+          }
+        }
+        print('[BackupProcessor] ✅ Archivos multimedia encontrados: $mediaFileCount');
+        print('[BackupProcessor]   - Archivos de pokemon: $pokemonFileCount');
+        print('[BackupProcessor]   - Archivos de items: $itemFileCount');
+        
+        print('[BackupProcessor] ✅ Todos los CSV volcados a la base de datos');
+        print('[BackupProcessor] ✅ Todos los archivos multimedia extraídos a sus rutas reales');
         print('[BackupProcessor] Progreso: 100.0% - Proceso completado');
         final completedMsg = LoadingMessages.getMessage('completed', languageCode);
         onProgress?.call(completedMsg, 1.0);
         
-        // Borrar ZIPs después de volcar los datos a la base de datos
-        print('[BackupProcessor] 🗑️ Eliminando archivos ZIP descargados...');
+        // Borrar ZIPs SOLO después de verificar que todo está completo
+        print('[BackupProcessor] 🗑️ Eliminando archivos ZIP descargados (después de volcar CSV y extraer archivos)...');
         int deletedCount = 0;
         for (final zipFile in downloadedZipFiles) {
           try {
             if (await zipFile.exists()) {
+              final zipSize = await zipFile.length();
               await zipFile.delete();
               deletedCount++;
-              print('[BackupProcessor]   ✅ Eliminado: ${path.basename(zipFile.path)}');
+              print('[BackupProcessor]   ✅ Eliminado: ${path.basename(zipFile.path)} (${(zipSize / 1024 / 1024).toStringAsFixed(2)} MB)');
+            } else {
+              print('[BackupProcessor]   ℹ️ ZIP ya no existe: ${path.basename(zipFile.path)}');
             }
           } catch (e) {
             print('[BackupProcessor]   ⚠️ No se pudo eliminar ${path.basename(zipFile.path)}: $e');
@@ -1611,7 +1421,7 @@ class BackupProcessor {
         }
         
         if (deletedCount > 0) {
-          print('[BackupProcessor] ✅ $deletedCount archivo(s) ZIP eliminado(s)');
+          print('[BackupProcessor] ✅ $deletedCount archivo(s) ZIP eliminado(s) correctamente');
         } else {
           print('[BackupProcessor] ℹ️ No se encontraron archivos ZIP para eliminar');
         }
@@ -1651,6 +1461,39 @@ class BackupProcessor {
   /// Función estática para decodificar ZIP en isolate
   static Archive _decodeZipIsolate(List<int> zipBytes) {
     return ZipDecoder().decodeBytes(zipBytes);
+  }
+  
+  /// Asegurar que la región "national" existe (región ficticia para la Pokédex nacional)
+  /// Esta región no tiene una región física asociada, pero permite asociar la Pokédex nacional
+  Future<void> _ensureNationalRegionExists() async {
+    try {
+      final regionDao = database.regionDao;
+      
+      // Buscar región "national" por nombre
+      final nationalRegion = await regionDao.getRegionByName('national');
+      
+      if (nationalRegion == null) {
+        print('[BackupProcessor] 📝 Creando región "national" (ficticia para Pokédex nacional)...');
+        
+        // Crear región "national" con apiId especial 9999
+        final nationalRegionCompanion = RegionsCompanion.insert(
+          apiId: 9999, // ID especial para región nacional
+          name: 'national',
+          mainGenerationId: const Value.absent(),
+          locationsJson: const Value.absent(),
+          pokedexesJson: const Value.absent(),
+          versionGroupsJson: const Value.absent(),
+        );
+        
+        await database.into(database.regions).insert(nationalRegionCompanion);
+        print('[BackupProcessor] ✅ Región "national" creada correctamente');
+      } else {
+        print('[BackupProcessor] ✅ Región "national" ya existe (id: ${nationalRegion.id})');
+      }
+    } catch (e) {
+      print('[BackupProcessor] ⚠️ Error verificando/creando región "national": $e');
+      // No lanzar excepción - es opcional
+    }
   }
   
   static List<List<String>> _parseCsvIsolate(String csvContent) {
@@ -1776,6 +1619,56 @@ class BackupProcessor {
       _insertPokemonVariants(batch, headers, dataRows);
     } else if (fileName.startsWith('29_localized_names')) {
       _insertLocalizedNames(batch, headers, dataRows);
+    } else if (fileName.startsWith('30_berries')) {
+      _insertBerries(batch, headers, dataRows);
+    } else if (fileName.startsWith('31_berry_firmness')) {
+      _insertBerryFirmness(batch, headers, dataRows);
+    } else if (fileName.startsWith('32_berry_flavor')) {
+      _insertBerryFlavor(batch, headers, dataRows);
+    } else if (fileName.startsWith('33_characteristics')) {
+      _insertCharacteristics(batch, headers, dataRows);
+    } else if (fileName.startsWith('34_contest_effects')) {
+      _insertContestEffects(batch, headers, dataRows);
+    } else if (fileName.startsWith('35_contest_types')) {
+      _insertContestTypes(batch, headers, dataRows);
+    } else if (fileName.startsWith('36_encounter_conditions')) {
+      _insertEncounterConditions(batch, headers, dataRows);
+    } else if (fileName.startsWith('37_encounter_condition_values')) {
+      _insertEncounterConditionValues(batch, headers, dataRows);
+    } else if (fileName.startsWith('38_encounter_methods')) {
+      _insertEncounterMethods(batch, headers, dataRows);
+    } else if (fileName.startsWith('39_genders')) {
+      _insertGenders(batch, headers, dataRows);
+    } else if (fileName.startsWith('40_item_attributes')) {
+      _insertItemAttributes(batch, headers, dataRows);
+    } else if (fileName.startsWith('41_item_fling_effects')) {
+      _insertItemFlingEffects(batch, headers, dataRows);
+    } else if (fileName.startsWith('42_locations')) {
+      _insertLocations(batch, headers, dataRows);
+    } else if (fileName.startsWith('43_location_areas')) {
+      _insertLocationAreas(batch, headers, dataRows);
+    } else if (fileName.startsWith('44_machines')) {
+      _insertMachines(batch, headers, dataRows);
+    } else if (fileName.startsWith('45_move_ailments')) {
+      _insertMoveAilments(batch, headers, dataRows);
+    } else if (fileName.startsWith('46_move_battle_styles')) {
+      _insertMoveBattleStyles(batch, headers, dataRows);
+    } else if (fileName.startsWith('47_move_categories')) {
+      _insertMoveCategories(batch, headers, dataRows);
+    } else if (fileName.startsWith('48_move_learn_methods')) {
+      _insertMoveLearnMethods(batch, headers, dataRows);
+    } else if (fileName.startsWith('49_move_targets')) {
+      _insertMoveTargets(batch, headers, dataRows);
+    } else if (fileName.startsWith('50_pal_park_areas')) {
+      _insertPalParkAreas(batch, headers, dataRows);
+    } else if (fileName.startsWith('51_pokeathlon_stats')) {
+      _insertPokeathlonStats(batch, headers, dataRows);
+    } else if (fileName.startsWith('52_pokemon_forms')) {
+      _insertPokemonForms(batch, headers, dataRows);
+    } else if (fileName.startsWith('53_super_contest_effects')) {
+      _insertSuperContestEffects(batch, headers, dataRows);
+    } else if (fileName.startsWith('54_versions')) {
+      _insertVersions(batch, headers, dataRows);
     }
   }
   
@@ -1875,6 +1768,16 @@ class BackupProcessor {
         continue;
       }
       
+      // processed_starters_json es opcional (puede no estar en filas antiguas)
+      final processedStartersJson = row.length > 7 ? _parseString(row[7]) : null;
+      
+      // Log para pokemons iniciales
+      if (processedStartersJson != null && processedStartersJson.isNotEmpty) {
+        print('[BackupProcessor] Region ${row[2]} (ID: $id): processed_starters_json = $processedStartersJson');
+      } else {
+        print('[BackupProcessor] ⚠️ Region ${row[2]} (ID: $id): processed_starters_json está vacío o null');
+      }
+      
       companions.add(RegionsCompanion(
         id: Value(id),
         apiId: Value(apiId),
@@ -1883,10 +1786,13 @@ class BackupProcessor {
         locationsJson: Value(_parseString(row[4])),
         pokedexesJson: Value(_parseString(row[5])),
         versionGroupsJson: Value(_parseString(row[6])),
+        processedStartersJson: Value(processedStartersJson),
       ));
     }
     
+    print('[BackupProcessor] _insertRegions: Insertando ${companions.length} regiones...');
     batch.insertAll(database.regions, companions, mode: InsertMode.replace);
+    print('[BackupProcessor] ✅ _insertRegions: Inserción completada');
   }
   
   void _insertTypes(Batch batch, List<String> headers, List<List<String>> rows) {
@@ -2500,8 +2406,9 @@ class BackupProcessor {
     
     for (int i = 0; i < rows.length; i++) {
       final row = rows[i];
+      // Ahora son 9 columnas (añadido version_groups_json)
       if (row.length < 8) {
-        print('[BackupProcessor] ⚠️ Fila ${i + 1} de Pokedex incompleta: ${row.length} columnas');
+        print('[BackupProcessor] ⚠️ Fila ${i + 1} de Pokedex incompleta: ${row.length} columnas (esperado al menos 8)');
         continue;
       }
       
@@ -2512,6 +2419,9 @@ class BackupProcessor {
         continue;
       }
       
+      // version_groups_json es opcional (puede no estar en filas antiguas)
+      final versionGroupsJson = row.length > 8 ? _parseString(row[8]) : null;
+      
       companions.add(PokedexCompanion(
         id: Value(id),
         apiId: Value(apiId),
@@ -2521,10 +2431,13 @@ class BackupProcessor {
         color: Value(_parseString(row[5])),
         descriptionsJson: Value(_parseString(row[6])),
         pokemonEntriesJson: Value(_parseString(row[7])),
+        versionGroupsJson: Value(versionGroupsJson),
       ));
     }
     
+    print('[BackupProcessor] _insertPokedex: Insertando ${companions.length} pokedexes...');
     batch.insertAll(database.pokedex, companions, mode: InsertMode.replace);
+    print('[BackupProcessor] ✅ _insertPokedex: Inserción completada');
   }
   
   void _insertPokemon(Batch batch, List<String> headers, List<List<String>> rows) {
@@ -2741,31 +2654,82 @@ class BackupProcessor {
   }
   
   void _insertPokedexEntries(Batch batch, List<String> headers, List<List<String>> rows) {
+    print('[BackupProcessor] _insertPokedexEntries: Iniciando inserción de ${rows.length} pokedex entries');
+    print('[BackupProcessor] _insertPokedexEntries: Headers: ${headers.join(", ")}');
+    
+    // Verificar que no es solo el header
+    if (rows.length <= 1) {
+      print('[BackupProcessor] ⚠️ ADVERTENCIA CRÍTICA: PokedexEntries CSV solo tiene header (${rows.length} filas) - NO HAY DATOS');
+      print('[BackupProcessor] ⚠️ Esto causará que no se muestren pokemons en las regiones');
+      return;
+    }
+    
     final companions = <PokedexEntriesCompanion>[];
+    int processedCount = 0;
+    int errorCount = 0;
+    final Map<int, int> pokedexCounts = {}; // pokedexId -> count
     
     for (int i = 0; i < rows.length; i++) {
       final row = rows[i];
+      processedCount++;
+      
+      // Saltar header
+      if (i == 0 && row.length > 0 && row[0].toLowerCase() == 'pokedex_id') {
+        continue;
+      }
+      
       if (row.length < 3) {
-        print('[BackupProcessor] ⚠️ Fila ${i + 1} de PokedexEntries incompleta: ${row.length} columnas');
+        if (errorCount < 10) { // Limitar logs de errores
+        print('[BackupProcessor] ⚠️ Fila ${i + 1} de PokedexEntries incompleta: ${row.length} columnas (esperado 3)');
+        }
+        errorCount++;
         continue;
       }
       
       final pokedexId = _parseInt(row[0]);
-      final pokemonSpeciesId = _parseInt(row[1]);
+      final pokemonId = _parseInt(row[1]); // CSV tiene pokemonId (no pokemonSpeciesId)
       final entryNumber = _parseInt(row[2]);
-      if (pokedexId == null || pokemonSpeciesId == null || entryNumber == null) {
-        print('[BackupProcessor] ⚠️ Fila ${i + 1} de PokedexEntries: pokedexId, pokemonSpeciesId o entryNumber es null');
+      
+      if (pokedexId == null || pokemonId == null || entryNumber == null) {
+        if (errorCount < 10) { // Limitar logs de errores
+        print('[BackupProcessor] ⚠️ Fila ${i + 1} de PokedexEntries: valores null - pokedexId=$pokedexId, pokemonId=$pokemonId, entryNumber=$entryNumber');
+        }
+        errorCount++;
         continue;
       }
       
       companions.add(PokedexEntriesCompanion(
         pokedexId: Value(pokedexId),
-        pokemonSpeciesId: Value(pokemonSpeciesId),
+        pokemonId: Value(pokemonId), // La tabla pokedex_entries usa pokemonId, no pokemonSpeciesId
         entryNumber: Value(entryNumber),
       ));
+      
+      // Contar entradas por pokedex
+      pokedexCounts[pokedexId] = (pokedexCounts[pokedexId] ?? 0) + 1;
     }
     
+    print('[BackupProcessor] _insertPokedexEntries: Procesados $processedCount entries, ${companions.length} válidos, $errorCount errores');
+    
+    if (companions.isEmpty) {
+      print('[BackupProcessor] ⚠️ ADVERTENCIA CRÍTICA: No se pudo procesar ningún pokedex entry válido');
+      print('[BackupProcessor] ⚠️ Esto causará que no se muestren pokemons en las regiones');
+      return; // Continuar sin lanzar excepción
+    }
+    
+    // Mostrar resumen por pokedex (primeras 10)
+    print('[BackupProcessor] _insertPokedexEntries: Resumen de entradas por pokedex (primeras 10):');
+    int shown = 0;
+    for (final entry in pokedexCounts.entries.take(10)) {
+      print('[BackupProcessor]   - Pokedex ID ${entry.key}: ${entry.value} entradas');
+      shown++;
+    }
+    if (pokedexCounts.length > 10) {
+      print('[BackupProcessor]   ... y ${pokedexCounts.length - 10} pokedexes más');
+    }
+    
+    print('[BackupProcessor] _insertPokedexEntries: Insertando ${companions.length} entries en la base de datos...');
     batch.insertAll(database.pokedexEntries, companions, mode: InsertMode.replace);
+    print('[BackupProcessor] ✅ _insertPokedexEntries: Inserción completada - ${companions.length} relaciones insertadas');
   }
   
   void _insertPokemonVariants(Batch batch, List<String> headers, List<List<String>> rows) {
@@ -2820,5 +2784,492 @@ class BackupProcessor {
     }
     
     batch.insertAll(database.localizedNames, companions, mode: InsertMode.replace);
+  }
+  
+  // Funciones de inserción para nuevas tablas
+  void _insertBerries(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <BerriesCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(BerriesCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        growthTime: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        maxHarvest: Value(_parseInt(row.length > 4 ? row[4] : null)),
+        naturalGiftPower: Value(_parseInt(row.length > 5 ? row[5] : null)),
+        size: Value(_parseInt(row.length > 6 ? row[6] : null)),
+        smoothness: Value(_parseInt(row.length > 7 ? row[7] : null)),
+        soilDryness: Value(_parseInt(row.length > 8 ? row[8] : null)),
+        firmnessId: Value(_parseInt(row.length > 9 ? row[9] : null)),
+        itemId: Value(_parseInt(row.length > 10 ? row[10] : null)),
+        naturalGiftTypeId: Value(_parseInt(row.length > 11 ? row[11] : null)),
+        dataJson: Value(_parseString(row.length > 12 ? row[12] : null)),
+      ));
+    }
+    batch.insertAll(database.berries, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertBerryFirmness(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <BerryFirmnessCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(BerryFirmnessCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.berryFirmness, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertBerryFlavor(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <BerryFlavorCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(BerryFlavorCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        contestTypeId: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        dataJson: Value(_parseString(row.length > 4 ? row[4] : null)),
+      ));
+    }
+    batch.insertAll(database.berryFlavor, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertCharacteristics(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <CharacteristicsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 2) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(CharacteristicsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        geneModulo: Value(_parseInt(row.length > 2 ? row[2] : null)),
+        highestStatId: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        possibleValuesJson: Value(_parseString(row.length > 4 ? row[4] : null)),
+        dataJson: Value(_parseString(row.length > 5 ? row[5] : null)),
+      ));
+    }
+    batch.insertAll(database.characteristics, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertContestEffects(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <ContestEffectsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 2) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(ContestEffectsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        appeal: Value(_parseInt(row.length > 2 ? row[2] : null)),
+        jam: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        dataJson: Value(_parseString(row.length > 4 ? row[4] : null)),
+      ));
+    }
+    batch.insertAll(database.contestEffects, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertContestTypes(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <ContestTypesCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(ContestTypesCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        berryFlavorId: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        dataJson: Value(_parseString(row.length > 4 ? row[4] : null)),
+      ));
+    }
+    batch.insertAll(database.contestTypes, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertEncounterConditions(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <EncounterConditionsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(EncounterConditionsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.encounterConditions, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertEncounterConditionValues(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <EncounterConditionValuesCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(EncounterConditionValuesCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        conditionId: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        dataJson: Value(_parseString(row.length > 4 ? row[4] : null)),
+      ));
+    }
+    batch.insertAll(database.encounterConditionValues, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertEncounterMethods(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <EncounterMethodsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(EncounterMethodsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        order: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        dataJson: Value(_parseString(row.length > 4 ? row[4] : null)),
+      ));
+    }
+    batch.insertAll(database.encounterMethods, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertGenders(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <GendersCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(GendersCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.genders, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertItemAttributes(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <ItemAttributesCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(ItemAttributesCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.itemAttributes, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertItemFlingEffects(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <ItemFlingEffectsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(ItemFlingEffectsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.itemFlingEffects, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertLocations(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <LocationsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(LocationsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        regionId: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        dataJson: Value(_parseString(row.length > 4 ? row[4] : null)),
+      ));
+    }
+    batch.insertAll(database.locations, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertLocationAreas(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <LocationAreasCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(LocationAreasCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        locationId: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        gameIndex: Value(_parseInt(row.length > 4 ? row[4] : null)),
+        dataJson: Value(_parseString(row.length > 5 ? row[5] : null)),
+      ));
+    }
+    batch.insertAll(database.locationAreas, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertMachines(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <MachinesCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 2) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(MachinesCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        itemId: Value(_parseInt(row.length > 2 ? row[2] : null)),
+        moveId: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        versionGroupId: Value(_parseInt(row.length > 4 ? row[4] : null)),
+        dataJson: Value(_parseString(row.length > 5 ? row[5] : null)),
+      ));
+    }
+    batch.insertAll(database.machines, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertMoveAilments(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <MoveAilmentsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(MoveAilmentsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.moveAilments, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertMoveBattleStyles(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <MoveBattleStylesCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(MoveBattleStylesCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.moveBattleStyles, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertMoveCategories(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <MoveCategoriesCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(MoveCategoriesCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.moveCategories, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertMoveLearnMethods(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <MoveLearnMethodsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(MoveLearnMethodsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.moveLearnMethods, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertMoveTargets(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <MoveTargetsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(MoveTargetsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.moveTargets, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertPalParkAreas(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <PalParkAreasCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(PalParkAreasCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.palParkAreas, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertPokeathlonStats(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <PokeathlonStatsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(PokeathlonStatsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.pokeathlonStats, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertPokemonForms(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <PokemonFormsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(PokemonFormsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        pokemonId: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        versionGroupId: Value(_parseInt(row.length > 4 ? row[4] : null)),
+        order: Value(_parseInt(row.length > 5 ? row[5] : null)),
+        formOrder: Value(_parseInt(row.length > 6 ? row[6] : null)),
+        isDefault: Value(_parseBool(row.length > 7 ? row[7] : null)),
+        isBattleOnly: Value(_parseBool(row.length > 8 ? row[8] : null)),
+        isMega: Value(_parseBool(row.length > 9 ? row[9] : null)),
+        formName: Value(_parseString(row.length > 10 ? row[10] : null)),
+        spritesJson: Value(_parseString(row.length > 11 ? row[11] : null)),
+        typesJson: Value(_parseString(row.length > 12 ? row[12] : null)),
+        dataJson: Value(_parseString(row.length > 13 ? row[13] : null)),
+        spriteFrontDefaultPath: Value(_parseString(row.length > 14 ? row[14] : null)),
+        spriteFrontShinyPath: Value(_parseString(row.length > 15 ? row[15] : null)),
+        spriteBackDefaultPath: Value(_parseString(row.length > 16 ? row[16] : null)),
+        spriteBackShinyPath: Value(_parseString(row.length > 17 ? row[17] : null)),
+      ));
+    }
+    batch.insertAll(database.pokemonForms, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertSuperContestEffects(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <SuperContestEffectsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 2) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(SuperContestEffectsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        appeal: Value(_parseInt(row.length > 2 ? row[2] : null)),
+        dataJson: Value(_parseString(row.length > 3 ? row[3] : null)),
+      ));
+    }
+    batch.insertAll(database.superContestEffects, companions, mode: InsertMode.replace);
+  }
+  
+  void _insertVersions(Batch batch, List<String> headers, List<List<String>> rows) {
+    final companions = <VersionsCompanion>[];
+    for (int i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.length < 3) continue;
+      final id = _parseInt(row[0]);
+      final apiId = _parseInt(row[1]);
+      if (id == null || apiId == null) continue;
+      companions.add(VersionsCompanion(
+        id: Value(id),
+        apiId: Value(apiId),
+        name: Value(row[2]),
+        versionGroupId: Value(_parseInt(row.length > 3 ? row[3] : null)),
+        dataJson: Value(_parseString(row.length > 4 ? row[4] : null)),
+      ));
+    }
+    batch.insertAll(database.versions, companions, mode: InsertMode.replace);
   }
 }

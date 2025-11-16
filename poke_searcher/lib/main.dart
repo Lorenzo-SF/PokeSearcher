@@ -4,6 +4,10 @@ import 'database/app_database.dart';
 import 'services/config/app_config.dart';
 import 'screens/splash_screen.dart';
 
+/// Punto de entrada principal de la aplicación PokeSearch.
+/// 
+/// Inicializa los servicios necesarios (configuración y base de datos)
+/// y lanza la aplicación Flutter.
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
@@ -25,8 +29,15 @@ void main() async {
   ));
 }
 
+/// Widget raíz de la aplicación PokeSearch.
+/// 
+/// Configura el tema de la aplicación (claro/oscuro/sistema) y establece
+/// la pantalla inicial (SplashScreen).
 class PokeSearchApp extends StatelessWidget {
+  /// Instancia de la base de datos de la aplicación
   final AppDatabase database;
+  
+  /// Configuración de la aplicación (tema, idioma, etc.)
   final AppConfig appConfig;
   
   const PokeSearchApp({

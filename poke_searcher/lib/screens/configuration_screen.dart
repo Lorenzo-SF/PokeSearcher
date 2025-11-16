@@ -7,6 +7,8 @@ import 'package:path/path.dart' as p;
 import '../database/app_database.dart';
 import '../services/config/app_config.dart';
 import '../database/daos/language_dao.dart';
+import '../database/daos/generation_dao.dart';
+import '../database/daos/version_group_dao.dart';
 
 class ConfigurationScreen extends StatefulWidget {
   final AppDatabase database;
@@ -28,13 +30,24 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
   List<Language> _availableLanguages = [];
   bool _isLoadingLanguages = true;
   bool _isResettingDatabase = false;
+  
+  // Configuración de imágenes de tipos
+  List<Generation> _availableGenerations = [];
+  List<VersionGroup> _availableVersionGroups = [];
+  int? _selectedGenerationId;
+  int? _selectedVersionGroupId;
+  bool _isLoadingGenerations = true;
+  bool _isLoadingVersionGroups = false;
 
   @override
   void initState() {
     super.initState();
     _selectedTheme = widget.appConfig.theme;
     _selectedLanguage = widget.appConfig.language;
+    _selectedGenerationId = widget.appConfig.typeImageGenerationId;
+    _selectedVersionGroupId = widget.appConfig.typeImageVersionGroupId;
     _loadLanguages();
+    _loadGenerations();
   }
 
   Future<void> _loadLanguages() async {
@@ -87,6 +100,91 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
     }
     setState(() {
       _selectedLanguage = languageCode;
+    });
+  }
+  
+  Future<void> _loadGenerations() async {
+    try {
+      final generationDao = GenerationDao(widget.database);
+      final generations = await generationDao.getAllGenerations();
+      setState(() {
+        _availableGenerations = generations;
+        _isLoadingGenerations = false;
+      });
+      
+      // Si hay una generación seleccionada, cargar sus version groups
+      if (_selectedGenerationId != null) {
+        await _loadVersionGroups(_selectedGenerationId!);
+      }
+    } catch (e) {
+      setState(() => _isLoadingGenerations = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al cargar generaciones: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+  
+  Future<void> _loadVersionGroups(int generationId) async {
+    setState(() {
+      _isLoadingVersionGroups = true;
+      _availableVersionGroups = [];
+    });
+    
+    try {
+      final versionGroupDao = VersionGroupDao(widget.database);
+      final versionGroups = await versionGroupDao.getVersionGroupsByGeneration(generationId);
+      setState(() {
+        _availableVersionGroups = versionGroups;
+        _isLoadingVersionGroups = false;
+      });
+      
+      // Si el version group seleccionado no está en la lista, limpiarlo
+      if (_selectedVersionGroupId != null) {
+        final exists = versionGroups.any((vg) => vg.id == _selectedVersionGroupId);
+        if (!exists) {
+          await _saveVersionGroup(null);
+        }
+      }
+    } catch (e) {
+      setState(() => _isLoadingVersionGroups = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al cargar versiones: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+  
+  Future<void> _saveGeneration(int? generationId) async {
+    await widget.appConfig.setTypeImageGenerationId(generationId);
+    setState(() {
+      _selectedGenerationId = generationId;
+      _selectedVersionGroupId = null; // Limpiar versión al cambiar generación
+    });
+    await widget.appConfig.setTypeImageVersionGroupId(null);
+    
+    // Cargar version groups de la nueva generación
+    if (generationId != null) {
+      await _loadVersionGroups(generationId);
+    } else {
+      setState(() {
+        _availableVersionGroups = [];
+      });
+    }
+  }
+  
+  Future<void> _saveVersionGroup(int? versionGroupId) async {
+    await widget.appConfig.setTypeImageVersionGroupId(versionGroupId);
+    setState(() {
+      _selectedVersionGroupId = versionGroupId;
     });
   }
 
@@ -237,6 +335,10 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
                 
                 // Selector de idioma
                 _buildLanguageSection(),
+                const SizedBox(height: 32),
+                
+                // Selector de generación y versión para imágenes de tipos
+                _buildTypeImageSection(),
                 const SizedBox(height: 32),
                 
                 // Control de datos
@@ -413,6 +515,113 @@ class _ConfigurationScreenState extends State<ConfigurationScreen> {
     );
   }
 
+  Widget _buildTypeImageSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Imágenes de Tipos',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Selecciona la generación y el juego para las imágenes de tipos de Pokémon',
+          style: TextStyle(
+            fontSize: 14,
+            color: Colors.grey,
+          ),
+        ),
+        const SizedBox(height: 16),
+        
+        // Dropdown de generación
+        DropdownButtonFormField<int>(
+          value: _selectedGenerationId,
+          decoration: const InputDecoration(
+            labelText: 'Generación',
+            border: OutlineInputBorder(),
+          ),
+          items: [
+            const DropdownMenuItem<int>(
+              value: null,
+              child: Text('Por defecto'),
+            ),
+            ..._availableGenerations.map((gen) {
+              // Formatear nombre de generación (ej: "generation-i" -> "Generación I")
+              final genName = _formatGenerationName(gen.name);
+              return DropdownMenuItem<int>(
+                value: gen.id,
+                child: Text(genName),
+              );
+            }),
+          ],
+          onChanged: _isLoadingGenerations ? null : (value) {
+            _saveGeneration(value);
+          },
+        ),
+        const SizedBox(height: 16),
+        
+        // Dropdown de versión (solo visible si hay generación seleccionada)
+        if (_selectedGenerationId != null)
+          DropdownButtonFormField<int>(
+            value: _selectedVersionGroupId,
+            decoration: const InputDecoration(
+              labelText: 'Juego',
+              border: OutlineInputBorder(),
+            ),
+            items: [
+              const DropdownMenuItem<int>(
+                value: null,
+                child: Text('Ninguno'),
+              ),
+              ..._availableVersionGroups.map((vg) {
+                // Formatear nombre de versión (ej: "red-blue" -> "Red/Blue")
+                final vgName = _formatVersionGroupName(vg.name);
+                return DropdownMenuItem<int>(
+                  value: vg.id,
+                  child: Text(vgName),
+                );
+              }),
+            ],
+            onChanged: _isLoadingVersionGroups ? null : (value) {
+              _saveVersionGroup(value);
+            },
+          ),
+      ],
+    );
+  }
+  
+  String _formatGenerationName(String name) {
+    // "generation-i" -> "Generación I"
+    final parts = name.split('-');
+    if (parts.length >= 2 && parts[0] == 'generation') {
+      final roman = parts[1].toUpperCase();
+      final romanMap = {
+        'I': 'I',
+        'II': 'II',
+        'III': 'III',
+        'IV': 'IV',
+        'V': 'V',
+        'VI': 'VI',
+        'VII': 'VII',
+        'VIII': 'VIII',
+        'IX': 'IX',
+      };
+      return 'Generación ${romanMap[roman] ?? roman}';
+    }
+    return name;
+  }
+  
+  String _formatVersionGroupName(String name) {
+    // "red-blue" -> "Red / Blue"
+    return name
+        .split('-')
+        .map((word) => word[0].toUpperCase() + word.substring(1))
+        .join(' / ');
+  }
+  
   Widget _buildDataControlSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
