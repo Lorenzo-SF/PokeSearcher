@@ -27,11 +27,11 @@ class BackupProcessor {
   
   // Mapa de SHA256 para verificación de integridad de cada archivo ZIP
   static final Map<String, String> _zipSha256Checksums = {
-    'poke_searcher_backup_database.zip': '6d79cbe4872d3073b0bd3b1dbc2c63de42a08a74eab37f77f0009d57c71908db',
-    'poke_searcher_backup_media_item.zip': 'bc70471f422ec878c21eb89643dd1c590250c4bb9c6dcbd08a8a60d1fd514b76',
-    'poke_searcher_backup_media_pokemon-form.zip': '69797fad7196131421094d07e26693b253405dea6e5ffeffd3e872b1a519b076',
-    'poke_searcher_backup_media_pokemon.zip': 'd8d0e07ce957f40addb768aef45351a31a561213fc29b743e89dd667b97025d6',
-    'poke_searcher_backup_media_type.zip': 'b57c044dbd46efad968e37002902e729de69850159520e7068c00ebf6e463f0d',
+    'poke_searcher_backup_database.zip': '4dc9ed5c25e313f264eb828c664fd42263ff0031a4067bc9525ce22c27050c82',
+    'poke_searcher_backup_media_item.zip': '76ca59d99f39c721a6d51d0a10604a2cd0b610a63660e812f9ccfdc1b510a0e5',
+    'poke_searcher_backup_media_pokemon-form.zip': 'e75e81a432e45a5b1045f485502b620a995f8689a277600052393dc68412367f',
+    'poke_searcher_backup_media_pokemon.zip': '3341ccad3dffb7c77464e3bdb421c83683b29c29e184b02465fa32ec57be3173',
+    'poke_searcher_backup_media_type.zip': 'fb299d67fd52c5d4a539876085300a4e60c82eec12453f6cc481b630cd3e085f',
   };
   
   /// Establecer las URLs de los ZIPs del backup
@@ -1227,7 +1227,7 @@ class BackupProcessor {
               if (entity is File && entity.path.endsWith('.csv')) {
                 searchedFiles++;
                 if (searchedFiles % 100 == 0) {
-                  print('[BackupProcessor] 🔍 Buscando CSV... (${searchedFiles} CSV revisados)');
+                  print('[BackupProcessor] 🔍 Buscando CSV... ($searchedFiles CSV revisados)');
                 }
                 
                 if (path.basename(entity.path) == fileName) {
@@ -1245,7 +1245,7 @@ class BackupProcessor {
                 }
               }
             }
-            print('[BackupProcessor] 🔍 Búsqueda completada: ${searchedFiles} archivos CSV revisados');
+            print('[BackupProcessor] 🔍 Búsqueda completada: $searchedFiles archivos CSV revisados');
           } catch (e) {
             print('[BackupProcessor] ⚠️ Error buscando archivo recursivamente: $e');
           }
@@ -2674,7 +2674,7 @@ class BackupProcessor {
       processedCount++;
       
       // Saltar header
-      if (i == 0 && row.length > 0 && row[0].toLowerCase() == 'pokedex_id') {
+      if (i == 0 && row.isNotEmpty && row[0].toLowerCase() == 'pokedex_id') {
         continue;
       }
       
@@ -2718,10 +2718,8 @@ class BackupProcessor {
     
     // Mostrar resumen por pokedex (primeras 10)
     print('[BackupProcessor] _insertPokedexEntries: Resumen de entradas por pokedex (primeras 10):');
-    int shown = 0;
     for (final entry in pokedexCounts.entries.take(10)) {
       print('[BackupProcessor]   - Pokedex ID ${entry.key}: ${entry.value} entradas');
-      shown++;
     }
     if (pokedexCounts.length > 10) {
       print('[BackupProcessor]   ... y ${pokedexCounts.length - 10} pokedexes más');
